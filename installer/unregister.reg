@@ -1,0 +1,8 @@
+Windows Registry Editor Version 5.00
+
+[-HKEY_CURRENT_USER\Software\Classes\ZipDesk.zip]
+[-HKEY_CURRENT_USER\Software\Classes\ZipDesk.7z]
+[-HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.zip\shell\ZipDesk]
+[-HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.7z\shell\ZipDesk]
+[-HKEY_CURRENT_USER\Software\Classes\*\shell\ZipDesk]
+[-HKEY_CURRENT_USER\Software\Classes\Directory\shell\ZipDesk]

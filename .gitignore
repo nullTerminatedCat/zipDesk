@@ -1,0 +1,7 @@
+build/
+dist/
+tools/
+.vs/
+out/
+installer/register.generated.reg
+*.user

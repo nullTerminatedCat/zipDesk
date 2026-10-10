@@ -1,0 +1,106 @@
+Windows Registry Editor Version 5.00
+
+; 把 __EXE__ 换成 ZipDesk.exe 的完整路径，反斜杠写成 \\
+; 也可以直接运行 register.ps1
+
+[HKEY_CURRENT_USER\Software\Classes\.zip]
+@="ZipDesk.zip"
+
+[HKEY_CURRENT_USER\Software\Classes\ZipDesk.zip]
+@="ZIP 压缩文件"
+
+[HKEY_CURRENT_USER\Software\Classes\ZipDesk.zip\DefaultIcon]
+@="__EXE__,0"
+
+[HKEY_CURRENT_USER\Software\Classes\ZipDesk.zip\shell\open]
+@="用日常解压打开"
+
+[HKEY_CURRENT_USER\Software\Classes\ZipDesk.zip\shell\open\command]
+@="\"__EXE__\" \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\.7z]
+@="ZipDesk.7z"
+
+[HKEY_CURRENT_USER\Software\Classes\ZipDesk.7z]
+@="7z 压缩文件"
+
+[HKEY_CURRENT_USER\Software\Classes\ZipDesk.7z\DefaultIcon]
+@="__EXE__,0"
+
+[HKEY_CURRENT_USER\Software\Classes\ZipDesk.7z\shell\open]
+@="用日常解压打开"
+
+[HKEY_CURRENT_USER\Software\Classes\ZipDesk.7z\shell\open\command]
+@="\"__EXE__\" \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.zip\shell\ZipDesk]
+@="日常解压"
+"MUIVerb"="日常解压"
+"Icon"="__EXE__,0"
+"SubCommands"=""
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.zip\shell\ZipDesk\shell\a_here]
+@="解压到当前目录"
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.zip\shell\ZipDesk\shell\a_here\command]
+@="\"__EXE__\" --extract-here \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.zip\shell\ZipDesk\shell\b_folder]
+@="解压到同名文件夹"
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.zip\shell\ZipDesk\shell\b_folder\command]
+@="\"__EXE__\" --extract-to-folder \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.7z\shell\ZipDesk]
+@="日常解压"
+"MUIVerb"="日常解压"
+"Icon"="__EXE__,0"
+"SubCommands"=""
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.7z\shell\ZipDesk\shell\a_here]
+@="解压到当前目录"
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.7z\shell\ZipDesk\shell\a_here\command]
+@="\"__EXE__\" --extract-here \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.7z\shell\ZipDesk\shell\b_folder]
+@="解压到同名文件夹"
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.7z\shell\ZipDesk\shell\b_folder\command]
+@="\"__EXE__\" --extract-to-folder \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\*\shell\ZipDesk]
+@="日常解压"
+"MUIVerb"="日常解压"
+"Icon"="__EXE__,0"
+"SubCommands"=""
+
+[HKEY_CURRENT_USER\Software\Classes\*\shell\ZipDesk\shell\a_zip]
+@="压缩为 zip"
+
+[HKEY_CURRENT_USER\Software\Classes\*\shell\ZipDesk\shell\a_zip\command]
+@="\"__EXE__\" --compress-zip \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\*\shell\ZipDesk\shell\b_7z]
+@="压缩为 7z"
+
+[HKEY_CURRENT_USER\Software\Classes\*\shell\ZipDesk\shell\b_7z\command]
+@="\"__EXE__\" --compress-7z \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\ZipDesk]
+@="日常解压"
+"MUIVerb"="日常解压"
+"Icon"="__EXE__,0"
+"SubCommands"=""
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\ZipDesk\shell\a_zip]
+@="压缩为 zip"
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\ZipDesk\shell\a_zip\command]
+@="\"__EXE__\" --compress-zip \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\ZipDesk\shell\b_7z]
+@="压缩为 7z"
+
+[HKEY_CURRENT_USER\Software\Classes\Directory\shell\ZipDesk\shell\b_7z\command]
+@="\"__EXE__\" --compress-7z \"%1\""
