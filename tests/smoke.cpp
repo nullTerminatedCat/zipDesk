@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -209,6 +210,41 @@ void testOverwriteAndCancel(zipdesk::ArchiveService& service, const fs::path& ro
     service.extract(overwrite, {});
     check(readFile(target) == "hello", "overwrite replaces the existing file");
 
+    writeFile(target, "PRESERVE");
+    std::atomic<bool> extractCancel{false};
+    zipdesk::OperationHooks extractHooks;
+    extractHooks.cancel = &extractCancel;
+    extractHooks.onTotal = [&extractCancel](std::uint64_t) { extractCancel.store(true); };
+    overwrite.relativePaths = {helloPath};
+    bool extractCancelled = false;
+    try {
+        service.extract(overwrite, extractHooks);
+    } catch (const zipdesk::ArchiveError& error) {
+        extractCancelled = error.kind() == zipdesk::ErrorKind::Cancelled;
+    }
+    check(extractCancelled, "extraction can be cancelled");
+    check(readFile(target) == "PRESERVE", "cancelled extraction keeps files in an existing destination");
+    const fs::path shared = root / "cancelled-with-user-file";
+    zipdesk::ExtractRequest cancelFresh = overwrite;
+    cancelFresh.outputDir = shared.wstring();
+    cancelFresh.removeOutputOnCancel = true;
+    std::atomic<bool> freshCancel{false};
+    zipdesk::OperationHooks freshHooks;
+    freshHooks.cancel = &freshCancel;
+    freshHooks.onTotal = [&](std::uint64_t) {
+        writeFile(shared / "user.txt", "KEEP");
+        freshCancel.store(true);
+    };
+    bool freshCancelled = false;
+    try {
+        service.extract(cancelFresh, freshHooks);
+    } catch (const zipdesk::ArchiveError& error) {
+        freshCancelled = error.kind() == zipdesk::ErrorKind::Cancelled;
+    }
+    check(freshCancelled, "new-directory extraction can be cancelled");
+    check(readFile(shared / "user.txt") == "KEEP",
+          "cancelling extraction preserves files added to the new destination");
+
     const fs::path big = root / "big.bin";
     {
         std::ofstream output(big, std::ios::binary);
@@ -238,11 +274,202 @@ void testOverwriteAndCancel(zipdesk::ArchiveService& service, const fs::path& ro
     }
     check(cancelledOk, "compression can be cancelled");
     check(!fs::exists(cancelled), "cancelled output is removed");
+
+    for (const auto format : {zipdesk::ArchiveFormat::Zip, zipdesk::ArchiveFormat::SevenZip}) {
+        const std::wstring extension = format == zipdesk::ArchiveFormat::Zip ? L".zip" : L".7z";
+        const fs::path destination = root / (L"existing" + extension);
+        writeFile(destination, "ORIGINAL");
+        cancel.store(false);
+        zipdesk::CompressRequest replace = request;
+        replace.outputPath = destination.wstring();
+        replace.format = format;
+        bool wasCancelled = false;
+        try {
+            service.compress(replace, hooks);
+        } catch (const zipdesk::ArchiveError& error) {
+            wasCancelled = error.kind() == zipdesk::ErrorKind::Cancelled;
+        }
+        check(wasCancelled, "replacing an archive can be cancelled");
+        check(readFile(destination) == "ORIGINAL", "cancelled replacement preserves the original archive");
+        for (const auto& item : fs::directory_iterator(root)) {
+            check(item.path().filename().wstring().find(L"existing.zipdesk-") != 0,
+                  "cancelled replacement leaves no staged file");
+        }
+        service.compress(replace, {});
+        check(containsPath(service.read(destination.wstring(), L"", {}), L"big.bin", 8 * 1024 * 1024),
+              "successful replacement commits a readable archive");
+    }
+
+    const fs::path sfx = root / "existing.exe";
+    writeFile(sfx, "ORIGINAL SFX");
+    cancel.store(false);
+    zipdesk::CompressRequest sfxRequest = request;
+    sfxRequest.outputPath = sfx.wstring();
+    sfxRequest.format = zipdesk::ArchiveFormat::SevenZip;
+    sfxRequest.sfx = true;
+    bool sfxCancelled = false;
+    try {
+        service.compress(sfxRequest, hooks);
+    } catch (const zipdesk::ArchiveError& error) {
+        sfxCancelled = error.kind() == zipdesk::ErrorKind::Cancelled;
+    }
+    check(sfxCancelled, "self-extracting output can be cancelled");
+    check(readFile(sfx) == "ORIGINAL SFX", "cancelled self-extracting output preserves the original");
+    service.compress(sfxRequest, {});
+    const std::string sfxBytes = readFile(sfx);
+    check(sfxBytes.size() > 1024 && sfxBytes.substr(0, 2) == "MZ", "self-extracting output is committed");
+
+    std::atomic<bool> repairCancel{true};
+    zipdesk::OperationHooks repairHooks;
+    repairHooks.cancel = &repairCancel;
+    bool repairCancelled = false;
+    try {
+        service.repair(archive.wstring(), L"", repairHooks);
+    } catch (const zipdesk::ArchiveError& error) {
+        repairCancelled = error.kind() == zipdesk::ErrorKind::Cancelled;
+    }
+    check(repairCancelled, "recovering readable files propagates cancellation");
+
+    const fs::path volumeSource = root / "volume.bin";
+    {
+        std::mt19937 generator(7);
+        std::ofstream output(volumeSource, std::ios::binary);
+        for (int i = 0; i < 64 * 1024; ++i) {
+            output.put(static_cast<char>(generator() & 0xff));
+        }
+    }
+    const fs::path volumeOutput = root / "volumes.zip";
+    const fs::path firstVolume(volumeOutput.wstring() + L".001");
+    const fs::path extraVolume(volumeOutput.wstring() + L".999");
+    writeFile(volumeOutput, "OLD BASE");
+    writeFile(firstVolume, "OLD FIRST");
+    writeFile(extraVolume, "OLD EXTRA");
+    zipdesk::CompressRequest volumeRequest;
+    volumeRequest.inputs = {volumeSource.wstring()};
+    volumeRequest.outputPath = volumeOutput.wstring();
+    volumeRequest.format = zipdesk::ArchiveFormat::Zip;
+    volumeRequest.level = zipdesk::CompressionLevel::Store;
+    volumeRequest.volumeSize = 16 * 1024;
+    cancel.store(false);
+    bool volumesCancelled = false;
+    try {
+        service.compress(volumeRequest, hooks);
+    } catch (const zipdesk::ArchiveError& error) {
+        volumesCancelled = error.kind() == zipdesk::ErrorKind::Cancelled;
+    }
+    check(volumesCancelled, "multi-volume compression can be cancelled");
+    check(readFile(volumeOutput) == "OLD BASE" && readFile(firstVolume) == "OLD FIRST" &&
+              readFile(extraVolume) == "OLD EXTRA", "cancelled multi-volume output preserves old files");
+    service.compress(volumeRequest, {});
+    check(!fs::exists(volumeOutput) && !fs::exists(extraVolume), "new multi-volume output replaces obsolete files");
+    check(readFile(firstVolume).substr(0, 2) == "PK" &&
+              fs::exists(fs::path(volumeOutput.wstring() + L".002")), "multi-volume output is committed");
+    for (const auto& item : fs::directory_iterator(root)) {
+        const std::wstring name = item.path().filename().wstring();
+        check(name.find(L"volumes.zipdesk-") != 0 && name.find(L".zipdesk-backup-") == std::wstring::npos,
+              "multi-volume output leaves no staging or backup files");
+    }
 }
 
 }  // namespace
 
+void testSourceArchiveProtection(zipdesk::ArchiveService& service, const fs::path& root) {
+    const fs::path input = root / "self-source" / "payload.zip";
+    const fs::path safe = root / "self-source" / "safe.txt";
+    writeFile(input, "PAYLOAD");
+    writeFile(safe, "safe");
+
+    zipdesk::CompressRequest compress;
+    compress.inputs = {input.wstring(), safe.wstring()};
+    compress.outputPath = (root / "self-staged.zip").wstring();
+    compress.format = zipdesk::ArchiveFormat::Zip;
+    service.compress(compress, {});
+
+    const auto info = service.read(compress.outputPath, L"", {});
+    std::wstring payloadPath;
+    std::wstring safePath;
+    std::uint32_t safeIndex = 0;
+    for (const auto& entry : info.entries) {
+        if (entry.name == L"payload.zip") payloadPath = entry.path;
+        if (entry.name == L"safe.txt") {
+            safePath = entry.path;
+            safeIndex = entry.index;
+        }
+    }
+    check(!payloadPath.empty() && !fs::path(payloadPath).is_absolute() && !safePath.empty(),
+          "self-overwrite fixture has relative entries");
+    if (payloadPath.empty() || fs::path(payloadPath).is_absolute() || safePath.empty()) return;
+
+    const fs::path destination = root / "self-destination";
+    const fs::path archive = destination / payloadPath;
+    fs::create_directories(archive.parent_path());
+    fs::rename(compress.outputPath, archive);
+
+    zipdesk::ExtractRequest extract;
+    extract.archivePath = archive.wstring();
+    extract.outputDir = destination.wstring();
+    extract.relativePaths = {payloadPath};
+    for (int mode = 0; mode < 2; ++mode) {
+        if (mode == 1) extract.relativePaths.clear();
+        bool rejected = false;
+        try {
+            service.extract(extract, {});
+        } catch (const zipdesk::ArchiveError& error) {
+            rejected = error.kind() == zipdesk::ErrorKind::Other;
+        }
+        check(rejected, "extraction cannot overwrite its source archive");
+        check(containsPath(service.read(archive.wstring(), L"", {}), L"payload.zip", 7),
+              "rejected self-overwrite preserves a readable source archive");
+    }
+
+    extract.indices = {safeIndex};
+    extract.relativePaths = {safePath};
+    service.extract(extract, {});
+    check(readFile(destination / safePath) == "safe",
+          "unrelated selected extraction remains available");
+}
+void testSmartExtractDestination() {
+    const fs::path archive = fs::absolute(L"smart-fixture.zip");
+    const auto parent = archive.parent_path();
+    const auto entry = [](const std::wstring& path, bool directory = false) {
+        zipdesk::ArchiveEntry item;
+        item.path = path;
+        item.isDir = directory;
+        return item;
+    };
+    const auto choose = [&](std::vector<zipdesk::ArchiveEntry> entries) {
+        return zipdesk::smartExtractDestination(archive.wstring(), entries);
+    };
+    auto result = choose({entry(L"docs/", true), entry(L"docs/a.txt"), entry(L"docs/sub/b.txt")});
+    check(fs::path(result.outputDir) == parent && fs::path(result.resultDir) == parent / L"docs",
+          "smart extraction avoids duplicate wrapper for one explicit directory");
+    result = choose({entry(L"docs\\a.txt"), entry(L"docs\\sub\\b.txt")});
+    check(fs::path(result.outputDir) == parent, "implicit directory and Windows separators are recognized");
+    result = choose({entry(L"empty", true)});
+    check(fs::path(result.resultDir) == parent / L"empty", "one empty directory keeps its name");
+    for (const auto& entries : std::vector<std::vector<zipdesk::ArchiveEntry>>{
+             {entry(L"readme.txt")}, {entry(L"docs/a"), entry(L"other/b")},
+             {entry(L"docs/a"), entry(L"readme.txt")},
+             {entry(L"docs"), entry(L"docs/a")}}) {
+        result = choose(entries);
+        check(fs::path(result.outputDir) == parent / L"smart-fixture",
+              "multiple roots or root file get a named wrapper");
+    }
+    for (const auto& entries : std::vector<std::vector<zipdesk::ArchiveEntry>>{
+             {}, {entry(L"../escape")}, {entry(L"/absolute")}, {entry(L"C:\\absolute")},
+             {entry(L"docs/../escape")}, {entry(L"docs./file")}, {entry(L"docs//file")}}) {
+        bool rejected = false;
+        try { choose(entries); } catch (const zipdesk::ArchiveError&) { rejected = true; }
+        check(rejected, "empty or ambiguous smart extraction paths are rejected");
+    }
+    const auto command = zipdesk::parseLaunch({L"ZipDesk.exe", L"--extract-smart", archive.wstring()});
+    check(command.action == zipdesk::LaunchAction::SmartExtract && command.paths.size() == 1,
+          "smart extract shell command is parsed");
+    check(zipdesk::parseLaunch({L"ZipDesk.exe", L"--extract-smart"}).action == zipdesk::LaunchAction::None,
+          "smart extract without a path does not launch");
+}
 int main() {
+    testSmartExtractDestination();
     testLaunchParser();
     testDropDecision();
 
@@ -256,6 +483,7 @@ int main() {
         testRoundTrip(service, zipdesk::ArchiveFormat::Zip, root / "zip");
         testRoundTrip(service, zipdesk::ArchiveFormat::SevenZip, root / "7z");
         testOverwriteAndCancel(service, root / "zip");
+        testSourceArchiveProtection(service, root / "zip");
     } catch (const std::exception& ex) {
         std::cerr << "FAIL: exception " << ex.what() << "\n";
         ++g_failures;

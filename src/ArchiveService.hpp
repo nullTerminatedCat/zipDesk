@@ -155,6 +155,13 @@ std::vector<std::uint32_t> expandSelection(const std::vector<ArchiveEntry>& entr
 bool hasConflicts(const std::vector<ArchiveEntry>& entries,
                   const std::vector<std::uint32_t>& indices,
                   const std::wstring& outputDir);
+struct SmartExtractDestination {
+    std::wstring outputDir;
+    std::wstring resultDir;
+};
+// Chooses paths only; does not create or overwrite anything.
+SmartExtractDestination smartExtractDestination(const std::wstring& archivePath,
+                                               const std::vector<ArchiveEntry>& entries);
 DropDecision decideDrop(const std::vector<std::wstring>& paths, bool archiveOpen);
 
 }  // namespace zipdesk

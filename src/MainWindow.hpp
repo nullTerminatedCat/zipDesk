@@ -8,29 +8,38 @@
 #include <QUrl>
 
 #include <functional>
+#include <atomic>
+#include <memory>
 #include <mutex>
 #include <optional>
 
 class ArchiveJob;
 class ProgressDialog;
+class QEvent;
 class QAction;
 class QMenu;
 class QLabel;
+class QListWidget;
+class QLineEdit;
 class QPlainTextEdit;
 class QStackedWidget;
-class QStandardItemModel;
+class ArchiveListModel;
 class QTableView;
 class QToolBar;
 class QToolButton;
+class QTimer;
+class QThread;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
 
 public:
     MainWindow(zipdesk::ArchiveService& service, zipdesk::LaunchCommand launch, QWidget* parent = nullptr);
+    ~MainWindow() override;
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    bool eventFilter(QObject* watched, QEvent* event) override;
     void showEvent(QShowEvent* event) override;
     void changeEvent(QEvent* event) override;
     bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
@@ -42,16 +51,23 @@ private:
     void setBarItemVisible(QWidget* widget, bool visible);
     void setBusy(bool busy);
     void showArchive(zipdesk::ArchiveInfo info);
+    void refreshRecentArchives();
     void fillModel();
+    void updateLocationBar();
+    void navigateUp();
     void openArchive(const QString& path);
     void chooseAndOpen();
     void createArchive(const QStringList& inputs);
     void finishCompress(const QString& output);
+    void finishExtract(const QString& directory, bool skippedExisting = false);
+    void showExtractIssue(const QString& title, const QString& message, const QString& directory, bool failed);
     void returnHome();
     void showSettings();
-    int compressFinishMode() const;
+    bool isShellAction() const;
+    bool isShellExtract() const;
     void appendPaths(const QStringList& paths);
     void extractArchive(bool selectedOnly, bool namedFolder);
+    void smartExtract(const QString& path);
     void shellExtract(bool namedFolder);
     void shellCompress(zipdesk::ArchiveFormat format);
     void handleDropped(const QList<QUrl>& urls);
@@ -64,8 +80,9 @@ private:
     void onFailed(const QString& message);
     void onCancelled();
     std::optional<QString> promptPassword(const QString& text);
-    std::optional<zipdesk::OverwritePolicy> askOverwrite();
+    std::optional<zipdesk::OverwritePolicy> askOverwrite(bool allowSkip = true);
     std::vector<std::uint32_t> selectedIndices() const;
+    QStringList selectedTopLevelPaths() const;
     void storePending(zipdesk::ArchiveInfo info);
     zipdesk::ArchiveInfo takePending();
     void toggleShellIntegration();
@@ -77,6 +94,7 @@ private:
     void copySelectedToClipboard();
     void toggleStayOnTop();
     void updateCaptionButtons();
+    void showDropHint(bool visible);
     void moveSelectedTo();
     void deleteSelected();
     void showInfo();
@@ -96,12 +114,14 @@ private:
     void showComment();
     void repairArchive();
     void updatePreview();
+    void startPreview();
     void applyLanguage();
     std::optional<zipdesk::ArchiveEntry> selectedEntry() const;
     std::vector<zipdesk::ArchiveEntry> selectedEntries() const;
     void extractEntries(const std::vector<zipdesk::ArchiveEntry>& entries,
                         const QString& directory,
-                        const std::function<void()>& after);
+                        const std::function<void()>& after,
+                        bool checkConflicts = false, bool allowSkip = true);
 
     zipdesk::ArchiveService& m_service;
     zipdesk::LaunchCommand m_launch;
@@ -112,9 +132,20 @@ private:
     QStackedWidget* m_previewStack = nullptr;
     QPlainTextEdit* m_previewText = nullptr;
     QLabel* m_previewImage = nullptr;
+    QLabel* m_previewHint = nullptr;
+    QTimer* m_previewTimer = nullptr;
+    QTimer* m_searchTimer = nullptr;
+    QThread* m_previewThread = nullptr;
+    std::shared_ptr<std::atomic_bool> m_previewCancel;
+    quint64 m_previewGeneration = 0;
     QTableView* m_table = nullptr;
-    QStandardItemModel* m_model = nullptr;
+    ArchiveListModel* m_model = nullptr;
     QWidget* m_emptyPage = nullptr;
+    QWidget* m_recentSection = nullptr;
+    QListWidget* m_recentList = nullptr;
+    QLineEdit* m_searchEdit = nullptr;
+    QLabel* m_locationLabel = nullptr;
+    QToolButton* m_upButton = nullptr;
     QAction* m_openAction = nullptr;
     QAction* m_newAction = nullptr;
     QToolBar* m_toolbar = nullptr;
@@ -122,16 +153,13 @@ private:
     QToolButton* m_newButton = nullptr;
     QToolButton* m_extractButton = nullptr;
     QToolButton* m_appendButton = nullptr;
-    QToolButton* m_testButton = nullptr;
-    QToolButton* m_repairButton = nullptr;
-    QToolButton* m_copyButton = nullptr;
-    QToolButton* m_moveButton = nullptr;
-    QToolButton* m_deleteButton = nullptr;
-    QToolButton* m_infoButton = nullptr;
+    QToolButton* m_moreButton = nullptr;
+    QToolButton* m_previewButton = nullptr;
     QAction* m_extractSelectedAction = nullptr;
     QAction* m_extractSelectedFolderAction = nullptr;
     QWidget* m_titleBar = nullptr;
     QLabel* m_captionTitle = nullptr;
+    QLabel* m_dropHint = nullptr;
     QToolButton* m_pinButton = nullptr;
     QToolButton* m_maxButton = nullptr;
     QToolButton* m_homeButton = nullptr;
@@ -140,6 +168,13 @@ private:
     QString m_clipboardDir;
     QMenu* m_extractMenu = nullptr;
     QMenu* m_appendMenu = nullptr;
+    QMenu* m_moreMenu = nullptr;
+    QAction* m_moreTestAction = nullptr;
+    QAction* m_moreRepairAction = nullptr;
+    QAction* m_moreCopyAction = nullptr;
+    QAction* m_moreMoveAction = nullptr;
+    QAction* m_moreDeleteAction = nullptr;
+    QAction* m_moreInfoAction = nullptr;
     QList<QAction*> m_itemActions;
     std::wstring m_prefix;
     std::wstring m_comment;
@@ -149,6 +184,8 @@ private:
     bool m_encrypted = false;
     std::vector<zipdesk::ArchiveEntry> m_entries;
     std::function<void()> m_onSuccess;
+    QString m_activeOperation;
+    QString m_extractOutputDir;
     bool m_busy = false;
     bool m_closeAfterJob = false;
     bool m_inDrag = false;

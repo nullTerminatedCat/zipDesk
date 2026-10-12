@@ -34,6 +34,9 @@ LaunchCommand parseLaunch(const std::vector<std::wstring>& args) {
     } else if (isOption(first, L"--extract-to-folder")) {
         action = LaunchAction::ExtractToFolder;
         pathIndex = 2;
+    } else if (isOption(first, L"--extract-smart")) {
+        action = LaunchAction::SmartExtract;
+        pathIndex = 2;
     } else if (isOption(first, L"--compress-zip")) {
         action = LaunchAction::CompressZip;
         pathIndex = 2;

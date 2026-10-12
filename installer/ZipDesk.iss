@@ -1,6 +1,6 @@
-﻿; 日常解压安装脚本。在 installer 目录用 ISCC 编译。
+﻿; 青匣安装脚本。在 installer 目录用 ISCC 编译。
 
-#define AppName "日常解压"
+#define AppName "青匣"
 #define AppVersion "0.1.0"
 #define AppExe "ZipDesk.exe"
 
@@ -8,7 +8,7 @@
 AppId={{A7B3E1C4-6D25-4F18-9C0A-2E8B7D4F1A63}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppPublisher=ZipDesk
+AppPublisher=青匣
 DefaultDirName={localappdata}\Programs\ZipDesk
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes

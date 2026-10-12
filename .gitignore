@@ -5,3 +5,4 @@ tools/
 out/
 installer/register.generated.reg
 *.user
+aqtinstall.log

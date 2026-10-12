@@ -9,11 +9,12 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QMessageBox>
+#include <QSettings>
 
 int main(int argc, char* argv[]) {
     QApplication application(argc, argv);
     QApplication::setApplicationName("ZipDesk");
-    QApplication::setApplicationDisplayName("日常解压");
+    QApplication::setApplicationDisplayName("青匣");
     QApplication::setOrganizationName("ZipDesk");
 
     std::vector<std::wstring> launchArgs;
@@ -36,7 +37,7 @@ int main(int argc, char* argv[]) {
 
     const QString dllPath = QDir(QCoreApplication::applicationDirPath()).filePath("7z.dll");
     if (!QFileInfo::exists(dllPath)) {
-        QMessageBox::critical(nullptr, "日常解压", "找不到 7z.dll：\n" + dllPath);
+        QMessageBox::critical(nullptr, "青匣", "找不到 7z.dll：\n" + dllPath);
         return 1;
     }
 
@@ -44,7 +45,7 @@ int main(int argc, char* argv[]) {
     try {
         service = std::make_unique<zipdesk::ArchiveService>(dllPath.toStdWString());
     } catch (const zipdesk::ArchiveError& error) {
-        QMessageBox::critical(nullptr, "日常解压", QString::fromStdWString(error.message()));
+        QMessageBox::critical(nullptr, "青匣", QString::fromStdWString(error.message()));
         return 1;
     }
 
@@ -53,7 +54,20 @@ int main(int argc, char* argv[]) {
     }
 
     MainWindow window(*service, launch);
-    window.resize(960, 600);
-    window.show();
+    const bool shellAction = launch.action == zipdesk::LaunchAction::CompressZip ||
+                             launch.action == zipdesk::LaunchAction::Compress7z ||
+                             launch.action == zipdesk::LaunchAction::ExtractHere ||
+                             launch.action == zipdesk::LaunchAction::ExtractToFolder ||
+                             launch.action == zipdesk::LaunchAction::SmartExtract;
+    if (shellAction) {
+        application.setQuitOnLastWindowClosed(false);
+    } else {
+        window.resize(960, 600);
+        const QByteArray geometry = QSettings().value(QStringLiteral("ui/windowGeometry")).toByteArray();
+        if (!geometry.isEmpty()) {
+            window.restoreGeometry(geometry);
+        }
+        window.show();
+    }
     return application.exec();
 }

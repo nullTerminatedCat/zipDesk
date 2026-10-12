@@ -13,7 +13,7 @@ Windows Registry Editor Version 5.00
 @="__EXE__,0"
 
 [HKEY_CURRENT_USER\Software\Classes\ZipDesk.zip\shell\open]
-@="用日常解压打开"
+@="用青匣打开"
 
 [HKEY_CURRENT_USER\Software\Classes\ZipDesk.zip\shell\open\command]
 @="\"__EXE__\" \"%1\""
@@ -28,14 +28,14 @@ Windows Registry Editor Version 5.00
 @="__EXE__,0"
 
 [HKEY_CURRENT_USER\Software\Classes\ZipDesk.7z\shell\open]
-@="用日常解压打开"
+@="用青匣打开"
 
 [HKEY_CURRENT_USER\Software\Classes\ZipDesk.7z\shell\open\command]
 @="\"__EXE__\" \"%1\""
 
 [HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.zip\shell\ZipDesk]
-@="日常解压"
-"MUIVerb"="日常解压"
+@="青匣"
+"MUIVerb"="青匣"
 "Icon"="__EXE__,0"
 "SubCommands"=""
 
@@ -52,8 +52,8 @@ Windows Registry Editor Version 5.00
 @="\"__EXE__\" --extract-to-folder \"%1\""
 
 [HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.7z\shell\ZipDesk]
-@="日常解压"
-"MUIVerb"="日常解压"
+@="青匣"
+"MUIVerb"="青匣"
 "Icon"="__EXE__,0"
 "SubCommands"=""
 
@@ -70,8 +70,8 @@ Windows Registry Editor Version 5.00
 @="\"__EXE__\" --extract-to-folder \"%1\""
 
 [HKEY_CURRENT_USER\Software\Classes\*\shell\ZipDesk]
-@="日常解压"
-"MUIVerb"="日常解压"
+@="青匣"
+"MUIVerb"="青匣"
 "Icon"="__EXE__,0"
 "SubCommands"=""
 
@@ -88,8 +88,8 @@ Windows Registry Editor Version 5.00
 @="\"__EXE__\" --compress-7z \"%1\""
 
 [HKEY_CURRENT_USER\Software\Classes\Directory\shell\ZipDesk]
-@="日常解压"
-"MUIVerb"="日常解压"
+@="青匣"
+"MUIVerb"="青匣"
 "Icon"="__EXE__,0"
 "SubCommands"=""
 
@@ -104,3 +104,15 @@ Windows Registry Editor Version 5.00
 
 [HKEY_CURRENT_USER\Software\Classes\Directory\shell\ZipDesk\shell\b_7z\command]
 @="\"__EXE__\" --compress-7z \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.zip\shell\ZipDesk\shell\c_smart]
+@="智能解压"
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.zip\shell\ZipDesk\shell\c_smart\command]
+@="\"__EXE__\" --extract-smart \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.7z\shell\ZipDesk\shell\c_smart]
+@="智能解压"
+
+[HKEY_CURRENT_USER\Software\Classes\SystemFileAssociations\.7z\shell\ZipDesk\shell\c_smart\command]
+@="\"__EXE__\" --extract-smart \"%1\""

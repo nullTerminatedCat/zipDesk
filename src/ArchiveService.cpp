@@ -13,11 +13,13 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <system_error>
 #include <utility>
 
 namespace zipdesk {
@@ -134,6 +136,104 @@ void writeSfx(const fs::path& sfx, const fs::path& payload, const fs::path& exeP
     }
     output << stub.rdbuf();
     output << archive.rdbuf();
+    output.flush();
+    if (!output || stub.bad() || archive.bad()) {
+        throw ArchiveError(ErrorKind::Other, L"无法完整写入自解压程序。");
+    }
+}
+
+fs::path stagingPath(const fs::path& target) {
+    static std::atomic<std::uint64_t> sequence{0};
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        const std::wstring suffix = L".zipdesk-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+                                    std::to_wstring(GetTickCount64()) + L"-" +
+                                    std::to_wstring(sequence.fetch_add(1));
+        const fs::path candidate = target.parent_path() /
+            (target.stem().wstring() + suffix + target.extension().wstring());
+        std::error_code error;
+        if (!fs::exists(candidate, error) && !error) {
+            return candidate;
+        }
+    }
+    throw ArchiveError(ErrorKind::Other, L"无法创建临时压缩包文件名。");
+}
+
+void commitStagedFile(const fs::path& staged, const fs::path& target) {
+    if (!MoveFileExW(staged.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        const std::error_code error(static_cast<int>(GetLastError()), std::system_category());
+        throw ArchiveError(ErrorKind::Other, L"无法保存压缩包：" + widen(error.message()));
+    }
+}
+
+void removePath(const fs::path& path);
+
+std::vector<fs::path> volumeFiles(const fs::path& prefix) {
+    std::vector<fs::path> files;
+    const fs::path directory = prefix.has_parent_path() ? prefix.parent_path() : fs::current_path();
+    const std::wstring name = prefix.filename().wstring() + L".";
+    for (const auto& entry : fs::directory_iterator(directory)) {
+        const std::wstring candidate = entry.path().filename().wstring();
+        if (candidate.size() <= name.size() || candidate.compare(0, name.size(), name) != 0) continue;
+        const std::wstring suffix = candidate.substr(name.size());
+        if (std::all_of(suffix.begin(), suffix.end(), [](wchar_t ch) { return ch >= L'0' && ch <= L'9'; })) {
+            if (!entry.is_regular_file()) {
+                throw ArchiveError(ErrorKind::Other, L"分卷路径不是普通文件：" + entry.path().wstring());
+            }
+            files.push_back(entry.path());
+        }
+    }
+    std::sort(files.begin(), files.end());
+    return files;
+}
+
+void removeStagedVolumes(const fs::path& staged) {
+    for (const fs::path& volume : volumeFiles(staged)) {
+        removePath(volume);
+    }
+}
+
+void moveWithoutCopy(const fs::path& source, const fs::path& target, bool replace = false) {
+    const DWORD flags = MOVEFILE_WRITE_THROUGH | (replace ? MOVEFILE_REPLACE_EXISTING : 0);
+    if (!MoveFileExW(source.c_str(), target.c_str(), flags)) {
+        const std::error_code error(static_cast<int>(GetLastError()), std::system_category());
+        throw ArchiveError(ErrorKind::Other, L"无法移动分卷文件：" + widen(error.message()));
+    }
+}
+
+void commitStagedVolumes(const fs::path& staged, const fs::path& target) {
+    const auto fresh = volumeFiles(staged);
+    if (fresh.empty()) {
+        throw ArchiveError(ErrorKind::Other, L"没有生成分卷文件。");
+    }
+    std::vector<std::pair<fs::path, fs::path>> saved;
+    std::vector<fs::path> installed;
+    try {
+        auto old = volumeFiles(target);
+        if (fs::exists(target)) old.push_back(target);
+        for (const fs::path& path : old) {
+            const fs::path backup(path.wstring() + L".zipdesk-backup-" + staged.filename().wstring());
+            moveWithoutCopy(path, backup);
+            saved.emplace_back(path, backup);
+        }
+        for (const fs::path& path : fresh) {
+            const std::wstring suffix = path.wstring().substr(staged.wstring().size());
+            const fs::path destination(target.wstring() + suffix);
+            moveWithoutCopy(path, destination);
+            installed.push_back(destination);
+        }
+    } catch (...) {
+        for (const fs::path& path : installed) removePath(path);
+        bool restored = true;
+        for (auto it = saved.rbegin(); it != saved.rend(); ++it) {
+            if (!MoveFileExW(it->second.c_str(), it->first.c_str(),
+                             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) restored = false;
+        }
+        if (!restored) {
+            throw ArchiveError(ErrorKind::Other, L"分卷提交失败，旧分卷的备份仍留在原目录，请检查后恢复。");
+        }
+        throw;
+    }
+    for (const auto& item : saved) removePath(item.second);
 }
 
 bit7z::BitCompressionLevel toLevel(CompressionLevel level) {
@@ -199,27 +299,12 @@ void removePath(const fs::path& path) {
 }
 
 void cleanupExtract(const ExtractRequest& request) {
-    if (request.outputDir.empty()) {
+    if (request.outputDir.empty() || !request.removeOutputOnCancel) {
         return;
     }
     const fs::path root(request.outputDir);
-    if (request.removeOutputOnCancel) {
-        removePath(root);
-        return;
-    }
-    std::vector<fs::path> paths;
-    paths.reserve(request.relativePaths.size());
-    for (const std::wstring& relative : request.relativePaths) {
-        if (!relative.empty()) {
-            paths.push_back(root / relative);
-        }
-    }
-    std::sort(paths.begin(), paths.end(), [](const fs::path& left, const fs::path& right) {
-        return left.native().size() > right.native().size();
-    });
-    for (const fs::path& path : paths) {
-        removePath(path);
-    }
+    std::error_code error;
+    fs::remove(root, error);  // Preserve files added during extraction.
 }
 
 std::optional<std::wstring> askAgain(const OperationHooks& hooks, int attempt) {
@@ -275,6 +360,45 @@ std::wstring normalizeArchivePath(std::wstring path) {
     return path;
 }
 
+SmartExtractDestination smartExtractDestination(const std::wstring& archivePath,
+                                               const std::vector<ArchiveEntry>& entries) {
+    if (entries.empty()) {
+        throw ArchiveError(ErrorKind::Other, L"这个压缩包是空的，没有需要解压的文件。");
+    }
+    const fs::path archive = fs::absolute(archivePath);
+    const fs::path parent = archive.parent_path();
+    std::wstring root;
+    bool singleDirectory = true;
+    for (const auto& entry : entries) {
+        std::wstring path = entry.path;
+        std::replace(path.begin(), path.end(), L'\\', L'/');
+        if (entry.isDir && !path.empty() && path.back() == L'/') path.pop_back();
+        if (path.empty() || path.front() == L'/' || path.find(L':') != std::wstring::npos) {
+            throw ArchiveError(ErrorKind::Other, L"压缩包包含异常路径，无法智能解压。");
+        }
+        std::size_t start = 0;
+        while (start < path.size()) {
+            const auto end = path.find(L'/', start);
+            const auto part = path.substr(start, end == std::wstring::npos ? end : end - start);
+            if (part.empty() || part == L"." || part == L".." ||
+                part.back() == L'.' || part.back() == L' ') {
+                throw ArchiveError(ErrorKind::Other, L"压缩包包含异常路径，无法智能解压。");
+            }
+            if (end == std::wstring::npos) break;
+            start = end + 1;
+        }
+        const auto slash = path.find(L'/');
+        const auto top = path.substr(0, slash);
+        if (root.empty()) root = top;
+        if (root != top || entry.isLink || (slash == std::wstring::npos && !entry.isDir))
+            singleDirectory = false;
+    }
+    if (singleDirectory) return {parent.wstring(), (parent / root).wstring()};
+    auto name = archive.stem().wstring();
+    if (name.empty() || name == L"." || name == L"..") name = L"extracted";
+    const auto folder = (parent / name).wstring();
+    return {folder, folder};
+}
 bool pathInside(const std::wstring& parent, const std::wstring& child) {
     if (parent.empty() || child.empty()) {
         return false;
@@ -468,6 +592,28 @@ void ArchiveService::extract(const ExtractRequest& request, const OperationHooks
         throw ArchiveError(ErrorKind::Other, L"找不到压缩包。");
     }
     ExtractRequest current = request;
+    // The source archive must never become one of its own extracted outputs.
+    // GUI callers provide selected paths; direct service/CLI callers are read here.
+    std::vector<std::wstring> paths = current.relativePaths;
+    if (paths.empty()) {
+        const ArchiveInfo info = read(current.archivePath, current.password, hooks);
+        current.password = info.password;
+        for (const ArchiveEntry& entry : info.entries) {
+            if (!entry.isDir && included(current.indices, entry.index)) {
+                paths.push_back(entry.path);
+            }
+        }
+    }
+    for (const std::wstring& path : paths) {
+        if (path.empty()) {
+            continue;
+        }
+        std::error_code error;
+        if (fs::equivalent(fs::path(current.outputDir) / path, current.archivePath, error)) {
+            throw ArchiveError(ErrorKind::Other,
+                               L"解压目标包含源压缩包自身，已停止以避免覆盖原压缩包。");
+        }
+    }
     for (int attempt = 0; attempt < 5; ++attempt) {
         try {
             const ArchiveFormat format = formatFromPath(current.archivePath);
@@ -529,8 +675,12 @@ void ArchiveService::compress(const CompressRequest& request, const OperationHoo
     if (output.has_parent_path()) {
         fs::create_directories(output.parent_path());
     }
-    const fs::path payload = request.sfx ? fs::path(output.wstring() + L".payload") : output;
-    const bool existed = fs::exists(output);
+    if (request.sfx && request.volumeSize > 0) {
+        throw ArchiveError(ErrorKind::Other, L"自解压程序不能同时使用分卷压缩。");
+    }
+    const bool singleVolume = request.volumeSize == 0;
+    const fs::path staged = stagingPath(output);
+    const fs::path payload = request.sfx ? fs::path(staged.wstring() + L".payload.7z") : staged;
     try {
         bit7z::BitFileCompressor compressor{m_library->library, toFormat(request.format)};
         compressor.setCompressionLevel(toLevel(request.level));
@@ -545,20 +695,30 @@ void ArchiveService::compress(const CompressRequest& request, const OperationHoo
         bindHooks(compressor, hooks);
         compressor.compress(request.inputs, payload.wstring());
         if (request.sfx) {
-            writeSfx(findSfxModule(m_dllPath), payload, output);
+            writeSfx(findSfxModule(m_dllPath), payload, staged);
             removePath(payload);
         }
+        if (singleVolume) {
+            commitStagedFile(staged, output);
+        } else {
+            commitStagedVolumes(staged, output);
+        }
     } catch (const bit7z::BitException& error) {
+        if (singleVolume) removePath(staged);
+        else removeStagedVolumes(staged);
+        if (request.sfx) removePath(payload);
         ArchiveError translated(ErrorKind::Other, L"");
         try {
             rethrowBit(error);
         } catch (const ArchiveError& caught) {
             translated = caught;
         }
-        if (translated.kind() == ErrorKind::Cancelled && !existed) {
-            removePath(output);
-        }
         throw translated;
+    } catch (...) {
+        if (singleVolume) removePath(staged);
+        else removeStagedVolumes(staged);
+        if (request.sfx) removePath(payload);
+        throw;
     }
 }
 
@@ -664,6 +824,9 @@ ArchiveService::RepairResult ArchiveService::repair(const std::wstring& archiveP
     result.outputDir = (archive.parent_path() / (archive.stem().wstring() + L"_repaired")).wstring();
     fs::create_directories(result.outputDir);
     for (const ArchiveEntry& entry : info.entries) {
+        if (hooks.cancel != nullptr && hooks.cancel->load()) {
+            throw ArchiveError(ErrorKind::Cancelled, L"已取消");
+        }
         if (entry.isDir) {
             continue;
         }
@@ -677,7 +840,10 @@ ArchiveService::RepairResult ArchiveService::repair(const std::wstring& archiveP
             request.overwrite = OverwritePolicy::Overwrite;
             extract(request, hooks);
             ++result.recovered;
-        } catch (const ArchiveError&) {
+        } catch (const ArchiveError& error) {
+            if (error.kind() == ErrorKind::Cancelled) {
+                throw;
+            }
             ++result.failed;
         }
     }

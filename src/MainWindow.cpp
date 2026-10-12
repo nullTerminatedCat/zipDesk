@@ -7,16 +7,21 @@
 #include "ShellIntegration.hpp"
 
 #include <QAbstractButton>
+#include <QAbstractTableModel>
 #include <QAction>
+#include <QApplication>
 #include <QCloseEvent>
 #include <QEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QShowEvent>
 #include <QCoreApplication>
 #include <QCursor>
+#include <QDesktopServices>
 #include <QDir>
 #include <QDrag>
 #include <QDragEnterEvent>
+#include <QDragLeaveEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
 #include <QEventLoop>
@@ -31,22 +36,29 @@
 #include <QInputDialog>
 #include <QItemSelectionModel>
 #include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
 #include <QPlainTextEdit>
 #include <QSplitter>
 #include <QProcess>
 #include <QRadioButton>
 #include <QSettings>
+#include <QShortcut>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMouseEvent>
 #include <QPixmap>
 #include <QPushButton>
 #include <QMimeData>
-#include <QStandardItemModel>
+#include <QSet>
+#include <QHash>
+#include <QSortFilterProxyModel>
 #include <QStatusBar>
 #include <QStackedWidget>
 #include <QStyle>
 #include <QToolTip>
 #include <QTableView>
+#include <QThread>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
@@ -114,6 +126,76 @@ QIcon pinIcon(bool pinned) {
     return pixmap;
 }
 
+QIcon toolGlyph(const QString& name, const QColor& color = QColor("#3a6762")) {
+    QPixmap pixmap(20, 20);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(color, 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.setBrush(Qt::NoBrush);
+    if (name == QStringLiteral("首页")) {
+        painter.drawLine(QPointF(3, 9), QPointF(10, 3));
+        painter.drawLine(QPointF(10, 3), QPointF(17, 9));
+        painter.drawRoundedRect(QRectF(5, 8, 10, 9), 1.5, 1.5);
+        painter.drawLine(QPointF(9, 17), QPointF(9, 12));
+        painter.drawLine(QPointF(9, 12), QPointF(12, 12));
+    } else if (name == QStringLiteral("打开")) {
+        painter.drawRoundedRect(QRectF(2.5, 6, 15, 11), 2, 2);
+        painter.drawLine(QPointF(3.5, 6), QPointF(3.5, 4));
+        painter.drawLine(QPointF(3.5, 4), QPointF(9, 4));
+        painter.drawLine(QPointF(9, 4), QPointF(11, 6));
+    } else if (name == QStringLiteral("新建压缩")) {
+        painter.drawRoundedRect(QRectF(4, 2.5, 11, 15), 1.5, 1.5);
+        painter.drawLine(QPointF(7, 7), QPointF(12, 7));
+        painter.drawLine(QPointF(9.5, 11), QPointF(9.5, 15));
+        painter.drawLine(QPointF(7.5, 13), QPointF(11.5, 13));
+    } else if (name == QStringLiteral("解压")) {
+        painter.drawRoundedRect(QRectF(3, 12.5, 14, 4.5), 1.2, 1.2);
+        painter.drawLine(QPointF(10, 2.5), QPointF(10, 11));
+        painter.drawLine(QPointF(6.5, 8), QPointF(10, 11.5));
+        painter.drawLine(QPointF(13.5, 8), QPointF(10, 11.5));
+    } else if (name == QStringLiteral("添加")) {
+        painter.drawRoundedRect(QRectF(2.5, 4, 15, 12.5), 2, 2);
+        painter.drawLine(QPointF(10, 7), QPointF(10, 13.5));
+        painter.drawLine(QPointF(6.8, 10.2), QPointF(13.2, 10.2));
+    } else if (name == QStringLiteral("工具")) {
+        painter.setBrush(color);
+        for (int x : {5, 10, 15}) painter.drawEllipse(QPointF(x, 10), 1.35, 1.35);
+    } else if (name == QStringLiteral("预览")) {
+        QPainterPath eye;
+        eye.moveTo(2.2, 10);
+        eye.cubicTo(6.2, 4, 13.8, 4, 17.8, 10);
+        eye.cubicTo(13.8, 16, 6.2, 16, 2.2, 10);
+        painter.drawPath(eye);
+        painter.drawEllipse(QPointF(10, 10), 2.3, 2.3);
+    } else if (name == QStringLiteral("上一级")) {
+        painter.drawLine(QPointF(10, 16), QPointF(10, 4));
+        painter.drawLine(QPointF(5.5, 8.5), QPointF(10, 4));
+        painter.drawLine(QPointF(14.5, 8.5), QPointF(10, 4));
+    }
+    painter.end();
+    return pixmap;
+}
+
+QIcon archiveItemGlyph(bool folder) {
+    QPixmap pixmap(19, 19);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(QColor("#3b8b7d"), 1.35, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.setBrush(QColor("#e4f4ef"));
+    if (folder) {
+        painter.drawRoundedRect(QRectF(1.5, 5.5, 16, 11), 2.2, 2.2);
+        painter.drawLine(QPointF(2.5, 5.7), QPointF(2.5, 3.8));
+        painter.drawLine(QPointF(2.5, 3.8), QPointF(8.5, 3.8));
+    } else {
+        painter.drawRoundedRect(QRectF(4, 1.5, 11, 16), 1.7, 1.7);
+        painter.drawLine(QPointF(7, 8), QPointF(12, 8));
+        painter.drawLine(QPointF(7, 11), QPointF(12, 11));
+    }
+    return pixmap;
+}
+
 class CaptionToolTip : public QObject {
 public:
     using QObject::QObject;
@@ -142,7 +224,7 @@ QToolButton* captionButton(QWidget* parent) {
     button->setObjectName("captionButton");
     button->setAutoRaise(true);
     button->setIconSize(QSize(16, 16));
-    button->setFixedSize(36, 32);
+    button->setFixedSize(36, 36);
     button->setMouseTracking(true);
     button->setAttribute(Qt::WA_Hover, true);
     button->setAttribute(Qt::WA_AlwaysShowToolTips, true);
@@ -151,19 +233,6 @@ QToolButton* captionButton(QWidget* parent) {
     return button;
 }
 
-class SizeItem : public QStandardItem {
-public:
-    SizeItem(quint64 size, const QString& text) {
-        setText(text);
-        setData(static_cast<qulonglong>(size), Qt::UserRole);
-        setEditable(false);
-        setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    }
-
-    bool operator<(const QStandardItem& other) const override {
-        return data(Qt::UserRole).toULongLong() < other.data(Qt::UserRole).toULongLong();
-    }
-};
 
 bool isInternalDrag(const QMimeData* mime) {
     return mime != nullptr && mime->hasFormat(QLatin1String(kInternalMime));
@@ -185,11 +254,43 @@ class ArchiveTableView : public QTableView {
 public:
     std::function<void()> onDrag;
     std::function<void(const QList<QUrl>&)> onDrop;
+    std::function<void(bool)> onDragActive;
 
 protected:
-    void dragEnterEvent(QDragEnterEvent* event) override { acceptFileDrag(event); }
+    void mousePressEvent(QMouseEvent* event) override {
+        if (event->button() != Qt::RightButton || selectionModel() == nullptr) {
+            QTableView::mousePressEvent(event);
+            return;
+        }
+        const QModelIndex target = indexAt(event->pos());
+        if (!target.isValid() || !selectionModel()->isRowSelected(target.row(), QModelIndex())) {
+            QTableView::mousePressEvent(event);
+            return;
+        }
+        const QItemSelection selection = selectionModel()->selection();
+        QTableView::mousePressEvent(event);
+        if (selectionModel()->selection() != selection) {
+            selectionModel()->select(selection, QItemSelectionModel::ClearAndSelect);
+        }
+        selectionModel()->setCurrentIndex(target, QItemSelectionModel::NoUpdate);
+    }
+    void dragEnterEvent(QDragEnterEvent* event) override {
+        acceptFileDrag(event);
+        if (event->isAccepted() && onDragActive) {
+            onDragActive(true);
+        }
+    }
     void dragMoveEvent(QDragMoveEvent* event) override { acceptFileDrag(event); }
+    void dragLeaveEvent(QDragLeaveEvent* event) override {
+        if (onDragActive) {
+            onDragActive(false);
+        }
+        QTableView::dragLeaveEvent(event);
+    }
     void dropEvent(QDropEvent* event) override {
+        if (onDragActive) {
+            onDragActive(false);
+        }
         if (!isExternalDrop(event->mimeData())) {
             event->ignore();
             return;
@@ -209,11 +310,31 @@ protected:
 class DropLabel : public QLabel {
 public:
     std::function<void(const QList<QUrl>&)> onDrop;
+    std::function<void(bool)> onDragActive;
+    std::function<void(int)> onResize;
 
 protected:
-    void dragEnterEvent(QDragEnterEvent* event) override { acceptFileDrag(event); }
+    void resizeEvent(QResizeEvent* event) override {
+        QLabel::resizeEvent(event);
+        if (onResize) onResize(width());
+    }
+    void dragEnterEvent(QDragEnterEvent* event) override {
+        acceptFileDrag(event);
+        if (event->isAccepted() && onDragActive) {
+            onDragActive(true);
+        }
+    }
     void dragMoveEvent(QDragMoveEvent* event) override { acceptFileDrag(event); }
+    void dragLeaveEvent(QDragLeaveEvent* event) override {
+        if (onDragActive) {
+            onDragActive(false);
+        }
+        QLabel::dragLeaveEvent(event);
+    }
     void dropEvent(QDropEvent* event) override {
+        if (onDragActive) {
+            onDragActive(false);
+        }
         if (!isExternalDrop(event->mimeData())) {
             event->ignore();
             return;
@@ -310,6 +431,142 @@ std::wstring namedFolderFor(const std::wstring& archivePath, bool* created) {
 
 }  // namespace
 
+class ArchiveListModel final : public QAbstractTableModel {
+public:
+    struct Row {
+        QString name;
+        QString path;
+        QString modified;
+        quint64 size = 0;
+        quint64 packed = 0;
+        std::uint32_t index = 0;
+        bool directory = false;
+        bool virtualDirectory = false;
+        bool parent = false;
+    };
+
+    explicit ArchiveListModel(QObject* parent = nullptr)
+        : QAbstractTableModel(parent)
+        , m_folderIcon(archiveItemGlyph(true))
+        , m_fileIcon(archiveItemGlyph(false)) {}
+
+    int rowCount(const QModelIndex& parent = {}) const override {
+        return parent.isValid() ? 0 : static_cast<int>(m_rows.size());
+    }
+
+    int columnCount(const QModelIndex& parent = {}) const override { return parent.isValid() ? 0 : 5; }
+
+    Qt::ItemFlags flags(const QModelIndex& index) const override {
+        if (!index.isValid()) return Qt::NoItemFlags;
+        Qt::ItemFlags result = Qt::ItemIsEnabled | Qt::ItemIsSelectable;
+        if (!m_rows[static_cast<std::size_t>(index.row())].parent) result |= Qt::ItemIsDragEnabled;
+        return result;
+    }
+
+    QVariant headerData(int section, Qt::Orientation orientation, int role) const override {
+        if (orientation != Qt::Horizontal || role != Qt::DisplayRole) return {};
+        static const QStringList headers = {"名称", "原大小", "压缩后大小", "修改时间", "类型"};
+        return section >= 0 && section < headers.size() ? QVariant(headers[section]) : QVariant();
+    }
+
+    QVariant data(const QModelIndex& index, int role) const override {
+        if (!index.isValid() || index.row() < 0 || index.row() >= rowCount() ||
+            index.column() < 0 || index.column() >= 5) return {};
+        const Row& row = m_rows[static_cast<std::size_t>(index.row())];
+        if (role == Qt::UserRole + 6) {
+            if (index.column() == 1) return static_cast<qulonglong>(row.size);
+            if (index.column() == 2) return static_cast<qulonglong>(row.packed);
+        }
+        if (index.column() == 0) {
+            if (role == Qt::UserRole) return row.index;
+            if (role == Qt::UserRole + 2) return row.parent;
+            if (role == Qt::UserRole + 3) return row.path;
+            if (role == Qt::UserRole + 4) return row.virtualDirectory;
+            if (role == Qt::UserRole + 5) return row.directory;
+            if (role == Qt::DecorationRole) return row.directory ? m_folderIcon : m_fileIcon;
+            if (role == Qt::ToolTipRole) return row.path;
+        }
+        if (role == Qt::TextAlignmentRole && (index.column() == 1 || index.column() == 2)) {
+            return static_cast<int>(Qt::AlignRight | Qt::AlignVCenter);
+        }
+        if (role != Qt::DisplayRole) return {};
+        switch (index.column()) {
+        case 0: return row.name;
+        case 1: return row.directory ? QString("—") : humanSize(row.size);
+        case 2: return row.directory ? QString("—") : humanSize(row.packed);
+        case 3: return row.modified;
+        case 4: return row.directory ? QString("目录") : QString("文件");
+        default: return {};
+        }
+    }
+
+    void setRows(std::vector<Row> rows) {
+        beginResetModel();
+        m_rows = std::move(rows);
+        endResetModel();
+    }
+
+private:
+    std::vector<Row> m_rows;
+    QIcon m_folderIcon;
+    QIcon m_fileIcon;
+};
+
+class EmptyIllustration : public QWidget {
+public:
+    explicit EmptyIllustration(QWidget* parent = nullptr) : QWidget(parent) {
+        setFixedSize(244, 190);
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.scale(width() / 244.0, height() / 190.0);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor("#eaf7f2"));
+        painter.drawEllipse(QRectF(30, 4, 182, 182));
+        painter.setBrush(QColor("#c9ebe0"));
+        painter.drawEllipse(QRectF(23, 57, 12, 12));
+        painter.drawEllipse(QRectF(204, 123, 8, 8));
+
+        painter.setBrush(QColor(15, 110, 107, 28));
+        painter.drawRoundedRect(QRectF(58, 118, 132, 18), 9, 9);
+        painter.setPen(QPen(QColor("#e4d8c8"), 1.2));
+        painter.setBrush(QColor("#fffdf8"));
+        painter.drawRoundedRect(QRectF(52, 58, 140, 78), 16, 16);
+        painter.drawRoundedRect(QRectF(48, 36, 148, 36), 14, 14);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor("#0f6e6b"));
+        painter.drawRoundedRect(QRectF(112, 28, 18, 108), 8, 8);
+        painter.drawEllipse(QRectF(108, 68, 26, 26));
+    }
+};
+
+class ArchiveSortProxy final : public QSortFilterProxyModel {
+public:
+    using QSortFilterProxyModel::QSortFilterProxyModel;
+
+protected:
+    bool lessThan(const QModelIndex& left, const QModelIndex& right) const override {
+        if (left.column() == 0) {
+            const bool leftParent = left.data(Qt::UserRole + 2).toBool();
+            const bool rightParent = right.data(Qt::UserRole + 2).toBool();
+            if (leftParent != rightParent) return leftParent;
+            const bool leftDir = left.data(Qt::UserRole + 5).toBool();
+            const bool rightDir = right.data(Qt::UserRole + 5).toBool();
+            if (leftDir != rightDir) return leftDir;
+        }
+        if (left.column() == 1 || left.column() == 2) {
+            const auto a = left.data(Qt::UserRole + 6).toULongLong();
+            const auto b = right.data(Qt::UserRole + 6).toULongLong();
+            if (a != b) return a < b;
+        }
+        return QString::localeAwareCompare(left.data().toString(), right.data().toString()) < 0;
+    }
+};
+
 MainWindow::MainWindow(zipdesk::ArchiveService& service, zipdesk::LaunchCommand launch, QWidget* parent)
     : QMainWindow(parent)
     , m_service(service)
@@ -328,12 +585,22 @@ MainWindow::MainWindow(zipdesk::ArchiveService& service, zipdesk::LaunchCommand 
     QTimer::singleShot(0, this, &MainWindow::runLaunch);
 }
 
+MainWindow::~MainWindow() {
+    if (m_previewThread != nullptr) {
+        if (m_previewCancel) m_previewCancel->store(true);
+        m_previewThread->requestInterruption();
+        m_previewThread->wait();
+    }
+}
+
 QToolButton* makeToolButton(QToolBar* toolbar, const QString& text, bool primary) {
     auto* button = new QToolButton(toolbar);
     button->setProperty("i18n", text);
     button->setText(zipdesk::translate(text));
     button->setToolTip(zipdesk::translate(text));
-    button->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    button->setIcon(toolGlyph(text));
+    button->setIconSize(QSize(20, 20));
+    button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     button->setAutoRaise(false);
     button->setObjectName(primary ? "primaryButton" : "toolButton");
     toolbar->addWidget(button);
@@ -342,45 +609,55 @@ QToolButton* makeToolButton(QToolBar* toolbar, const QString& text, bool primary
 
 void MainWindow::buildUi() {
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
+    setMinimumSize(720, 520);
     m_stayOnTop = QSettings().value(QStringLiteral("ui/stayOnTop"), false).toBool();
-    setWindowTitle("日常解压");
+    setWindowTitle("青匣");
     setWindowIcon(QIcon(":/assets/icon.png"));
     resize(980, 680);
     setStyleSheet(
-        "QMainWindow, QDialog { background: #f3efe6; color: #1f2430; }"
-        "QToolBar { background: transparent; border: none; spacing: 4px; padding: 8px 12px; }"
-        "QWidget#titleBar { background: #f6f1e8; border: none; border-bottom: 1px solid #eadfd2; }"
-        "QLabel#captionTitle { font-size: 13px; color: #1f2430; padding-left: 8px; }"
-        "QToolButton#captionButton { background: transparent; border: none; border-radius: 6px; padding: 0; }"
-        "QToolButton#captionButton:hover { background: #e7ddd0; }"
-        "QToolButton#captionButton:checked { background: #d7ebe8; }"
-        "QToolButton#closeButton { background: transparent; border: none; border-radius: 6px; padding: 0; }"
-        "QToolButton#closeButton:hover { background: #c75050; }"
-        "QToolButton#primaryButton, QPushButton#primaryButton { background: #0f6e6b; color: white; border: none; border-radius: 10px; padding: 8px 16px; }"
-        "QToolButton#primaryButton:hover, QPushButton#primaryButton:hover { background: #0c5c59; }"
-        "QToolButton#primaryButton:disabled { background: #b7c9c7; color: #f7f4ee; }"
-        "QToolButton#toolButton, QPushButton { background: #fffdf8; color: #1f2430; border: 1px solid #e4d8c8; border-radius: 8px; padding: 4px 8px; }"
-        "QToolButton#toolButton:hover, QPushButton:hover { border-color: #0f6e6b; }"
-        "QToolButton:disabled, QPushButton:disabled { color: #b3a89c; }"
-        "QLabel#brandTitle { font-size: 18px; font-weight: 600; color: #1f2430; }"
-        "QLabel#emptyTitle { font-size: 22px; font-weight: 600; color: #1f2430; }"
-        "QLabel#emptyBody { font-size: 13px; color: #6d645b; }"
-        "QFrame#archiveCard { background: #fffdf8; border: 1px solid #eadfD2; border-radius: 16px; }"
-        "QTableView { background: transparent; border: none; alternate-background-color: #faf6f0; "
-        "selection-background-color: #d7ebe8; selection-color: #1f2430; outline: none; }"
-        "QHeaderView::section { background: #fffdf8; color: #6d645b; padding: 10px 12px; border: none; "
-        "border-bottom: 1px solid #eadfd2; font-weight: 600; }"
-        "QStatusBar { background: transparent; color: #6d645b; }"
-        "QMenu { background: #fffdf8; border: 1px solid #eadfd2; padding: 6px; }"
-        "QMenu::item { padding: 6px 18px; border-radius: 6px; }"
-        "QMenu::item:selected { background: #d7ebe8; }"
-        "QLineEdit, QComboBox, QListWidget { background: #fffdf8; border: 1px solid #e4d8c8; border-radius: 8px; padding: 6px; }"
-        "QProgressBar { border: none; background: #efe6da; border-radius: 5px; min-height: 8px; }"
-        "QProgressBar::chunk { background: #0f6e6b; border-radius: 5px; }");
+        "QWidget:focus { outline: none; }"
+        "QLabel#dropHint { background: rgba(22, 116, 104, 0.14); color: #0f6e6b; border: 2px dashed #167468; "
+        "border-radius: 16px; font-size: 18px; font-weight: 700; margin: 18px; }"
+        "QMainWindow, QDialog { background: #f4f8f7; color: #203b37; }"
+        "QToolBar { background: #f4f8f7; border: none; spacing: 7px; padding: 10px 20px 6px; }"
+        "QWidget#titleBar { background: #ffffff; border: none; border-bottom: 1px solid #e0eae6; }"
+        "QLabel#captionTitle { font-size: 13px; font-weight: 600; color: #213c38; padding-left: 9px; }"
+        "QToolButton#captionButton, QToolButton#closeButton { background: transparent; border: none; border-radius: 7px; padding: 0; }"
+        "QToolButton#captionButton:hover { background: #eaf2ef; }"
+        "QToolButton#captionButton:checked { background: #dff1eb; }"
+        "QToolButton#closeButton:hover { background: #fbe6e5; }"
+        "QToolButton#primaryButton, QPushButton#primaryButton { background: #167468; color: white; border: 1px solid #167468; border-radius: 9px; padding: 9px 16px; font-weight: 600; }"
+        "QToolButton#primaryButton:hover, QPushButton#primaryButton:hover { background: #0e6258; border-color: #0e6258; }"
+        "QToolButton#primaryButton:disabled, QPushButton#primaryButton:disabled { background: #a9c9bf; border-color: #a9c9bf; color: #f4f8f6; }"
+        "QToolButton#toolButton, QPushButton { background: #ffffff; color: #294b45; border: 1px solid #d9e6e1; border-radius: 9px; padding: 8px 13px; }"
+        "QToolButton#toolButton:hover, QPushButton:hover { background: #f6fbf9; border-color: #8abbb0; }"
+        "QToolButton#toolButton:checked { background: #e0f3ed; border-color: #8abbb0; }"
+        "QToolButton:disabled, QPushButton:disabled { color: #9aada7; }"
+        "QPushButton#quietButton { background: transparent; border: none; color: #167468; padding: 5px 7px; }"
+        "QPushButton#quietButton:hover { background: #e7f4ef; }"
+        "QFrame#heroCard, QFrame#archiveCard { background: #ffffff; border: 1px solid #e0eae6; border-radius: 16px; }"
+        "QLabel#heroEyebrow { color: #167468; font-size: 11px; font-weight: 700; }"
+        "QLabel#emptyTitle { color: #193b35; font-size: 25px; font-weight: 700; }"
+        "QLabel#emptyBody { color: #6e817b; font-size: 12px; }"
+        "QLabel#recentTitle { color: #25463f; font-size: 13px; font-weight: 600; }"
+        "QLabel#archiveLocation { color: #35534d; font-size: 13px; font-weight: 600; }"
+        "QToolButton#locationUp { background: white; border: 1px solid #d9e6e1; border-radius: 9px; }"
+        "QToolButton#locationUp:hover { border-color: #8abbb0; background: #f6fbf9; }"
+        "QToolButton#locationUp:disabled { background: #f2f6f4; border-color: #e8efec; }"
+        "QTableView { background: transparent; border: none; alternate-background-color: #f8fbfa; selection-background-color: #ddf2eb; selection-color: #193b35; outline: none; }"
+        "QHeaderView::section { background: #fbfdfc; color: #657e76; padding: 11px 12px; border: none; border-bottom: 1px solid #e3ece8; font-weight: 600; }"
+        "QStatusBar { background: #f4f8f7; color: #738780; border-top: 1px solid #e4ece9; }"
+        "QMenu { background: #ffffff; color: #294b45; border: 1px solid #dfeae5; padding: 5px; }"
+        "QMenu::item { padding: 7px 20px; border-radius: 5px; }"
+        "QMenu::item:selected { background: #e6f4ef; }"
+        "QLineEdit, QComboBox, QListWidget { background: #ffffff; color: #294b45; border: 1px solid #d9e6e1; border-radius: 9px; padding: 7px 9px; selection-background-color: #d8eee7; }"
+        "QLineEdit:focus, QComboBox:focus, QListWidget:focus { border-color: #4aa18f; }"
+        "QProgressBar { border: none; background: #e6efeb; border-radius: 5px; min-height: 8px; }"
+        "QProgressBar::chunk { background: #167468; border-radius: 5px; }");
 
     m_titleBar = new QWidget(this);
     m_titleBar->setObjectName("titleBar");
-    m_titleBar->setFixedHeight(36);
+    m_titleBar->setFixedHeight(40);
     m_titleBar->setAttribute(Qt::WA_StyledBackground, true);
     auto* captionLayout = new QHBoxLayout(m_titleBar);
     captionLayout->setContentsMargins(10, 0, 0, 0);
@@ -389,8 +666,9 @@ void MainWindow::buildUi() {
     captionIcon->setPixmap(QIcon(":/assets/icon.png").pixmap(18, 18));
     captionIcon->setAttribute(Qt::WA_TransparentForMouseEvents);
     captionLayout->addWidget(captionIcon);
-    m_captionTitle = new QLabel("日常解压", m_titleBar);
+    m_captionTitle = new QLabel("青匣", m_titleBar);
     m_captionTitle->setObjectName("captionTitle");
+    m_captionTitle->setMinimumWidth(245);
     m_captionTitle->setAttribute(Qt::WA_TransparentForMouseEvents);
     captionLayout->addWidget(m_captionTitle);
     captionLayout->addStretch(1);
@@ -441,11 +719,11 @@ void MainWindow::buildUi() {
     m_toolbar = toolbar;
     toolbar->setMovable(false);
 
-    m_homeButton = makeToolButton(toolbar, "返回", false);
+    m_homeButton = makeToolButton(toolbar, "首页", false);
     m_homeButton->setVisible(false);
     connect(m_homeButton, &QToolButton::clicked, this, &MainWindow::returnHome);
 
-    m_openButton = makeToolButton(toolbar, "打开", true);
+    m_openButton = makeToolButton(toolbar, "打开", false);
     m_openAction = new QAction("打开", this);
     m_openAction->setShortcut(QKeySequence::Open);
     connect(m_openAction, &QAction::triggered, this, &MainWindow::chooseAndOpen);
@@ -458,6 +736,12 @@ void MainWindow::buildUi() {
     connect(m_newButton, &QToolButton::clicked, m_newAction, &QAction::trigger);
 
     m_extractMenu = new QMenu(this);
+    m_extractMenu->addAction("智能解压", this, [this]() {
+        const QString path = m_path.empty()
+            ? QFileDialog::getOpenFileName(this, "选择要解压的压缩包", QString(), "压缩包 (*.zip *.7z *.rar)")
+            : QString::fromStdWString(m_path);
+        if (!path.isEmpty()) smartExtract(path);
+    });
     m_extractMenu->addAction("解压到…", this, [this]() { extractArchive(false, false); });
     m_extractMenu->addAction("解压到同名文件夹", this, [this]() { extractArchive(false, true); });
     m_extractSelectedAction = m_extractMenu->addAction("解压所选到…", this, [this]() { extractArchive(true, false); });
@@ -468,38 +752,57 @@ void MainWindow::buildUi() {
     m_extractButton->setPopupMode(QToolButton::InstantPopup);
 
     m_appendMenu = new QMenu(this);
-    m_appendMenu->addAction("追加文件", this, [this]() {
+    m_appendMenu->addAction("添加文件", this, [this]() {
         const QStringList files = QFileDialog::getOpenFileNames(this, "追加文件");
         if (!files.isEmpty()) {
             appendPaths(files);
         }
     });
-    m_appendMenu->addAction("追加文件夹", this, [this]() {
+    m_appendMenu->addAction("添加文件夹", this, [this]() {
         const QString folder = QFileDialog::getExistingDirectory(this, "追加文件夹");
         if (!folder.isEmpty()) {
             appendPaths({folder});
         }
     });
-    m_testButton = makeToolButton(toolbar, "测试", false);
-    m_repairButton = makeToolButton(toolbar, "修复", false);
-    connect(m_repairButton, &QToolButton::clicked, this, &MainWindow::repairArchive);
-    connect(m_testButton, &QToolButton::clicked, this, &MainWindow::testArchive);
-    m_copyButton = makeToolButton(toolbar, "复制", false);
-    connect(m_copyButton, &QToolButton::clicked, this, &MainWindow::copySelectedTo);
-    m_moveButton = makeToolButton(toolbar, "移动", false);
-    connect(m_moveButton, &QToolButton::clicked, this, &MainWindow::moveSelectedTo);
-    m_deleteButton = makeToolButton(toolbar, "删除", false);
-    connect(m_deleteButton, &QToolButton::clicked, this, &MainWindow::deleteSelected);
-    m_infoButton = makeToolButton(toolbar, "信息", false);
-    connect(m_infoButton, &QToolButton::clicked, this, &MainWindow::showInfo);
-    m_appendButton = makeToolButton(toolbar, "追加", false);
+    m_appendButton = makeToolButton(toolbar, "添加", false);
     m_appendButton->setMenu(m_appendMenu);
     m_appendButton->setPopupMode(QToolButton::InstantPopup);
+    m_moreMenu = new QMenu(this);
+    m_moreTestAction = m_moreMenu->addAction("测试完整性", this, &MainWindow::testArchive);
+    m_moreRepairAction = m_moreMenu->addAction("抢救可读取文件", this, &MainWindow::repairArchive);
+    m_moreMenu->addSeparator();
+    m_moreCopyAction = m_moreMenu->addAction("复制所选到…", this, &MainWindow::copySelectedTo);
+    m_moreMoveAction = m_moreMenu->addAction("移动所选到…", this, &MainWindow::moveSelectedTo);
+    m_moreDeleteAction = m_moreMenu->addAction("删除所选", this, &MainWindow::deleteSelected);
+    m_moreMenu->addSeparator();
+    m_moreInfoAction = m_moreMenu->addAction("信息", this, &MainWindow::showInfo);
+    m_moreButton = makeToolButton(toolbar, "工具", false);
+    m_moreButton->setMenu(m_moreMenu);
+    m_moreButton->setPopupMode(QToolButton::InstantPopup);
+    for (QMenu* menu : {m_extractMenu, m_appendMenu, m_moreMenu}) {
+        for (QAction* action : menu->actions()) {
+            if (!action->isSeparator()) {
+                action->setProperty("i18n", action->text());
+            }
+        }
+    }
+    m_previewButton = new QToolButton;
+    m_previewButton->setObjectName("toolButton");
+    m_previewButton->setProperty("i18n", "预览");
+    m_previewButton->setText(zipdesk::translate("预览"));
+    m_previewButton->setToolTip(zipdesk::translate("预览"));
+    m_previewButton->setIcon(toolGlyph("预览"));
+    m_previewButton->setIconSize(QSize(20, 20));
+    m_previewButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    m_previewButton->setCheckable(true);
+    m_previewButton->setChecked(QSettings().value(QStringLiteral("ui/previewVisible"), false).toBool());
 
-    m_model = new QStandardItemModel(this);
-    m_model->setHorizontalHeaderLabels({"名称", "原大小", "压缩后大小", "修改时间", "类型"});
+    m_model = new ArchiveListModel(this);
+    auto* sortedModel = new ArchiveSortProxy(this);
+    sortedModel->setSourceModel(m_model);
+    sortedModel->setDynamicSortFilter(false);
     auto* table = new ArchiveTableView;
-    table->setModel(m_model);
+    table->setModel(sortedModel);
     table->setSelectionBehavior(QAbstractItemView::SelectRows);
     table->setSelectionMode(QAbstractItemView::ExtendedSelection);
     table->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -521,8 +824,10 @@ void MainWindow::buildUi() {
     table->horizontalHeader()->resizeSection(3, 160);
     table->horizontalHeader()->resizeSection(4, 72);
     table->setSortingEnabled(true);
+    table->sortByColumn(0, Qt::AscendingOrder);
     table->onDrag = [this]() { dragOutSelection(); };
     table->onDrop = [this](const QList<QUrl>& urls) { handleDropped(urls); };
+    table->onDragActive = [this](bool active) { showDropHint(active); };
     table->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(table, &QWidget::customContextMenuRequested, this, &MainWindow::showItemMenu);
     m_table = table;
@@ -535,18 +840,55 @@ void MainWindow::buildUi() {
     m_archivePage = new QWidget;
     auto* archiveLayout = new QVBoxLayout(m_archivePage);
     archiveLayout->setContentsMargins(20, 8, 20, 16);
+    auto* locationBar = new QHBoxLayout;
+    m_upButton = new QToolButton;
+    m_upButton->setObjectName("locationUp");
+    m_upButton->setIcon(toolGlyph("上一级"));
+    m_upButton->setIconSize(QSize(20, 20));
+    m_upButton->setToolTip("上一级 (Alt+↑)");
+    m_upButton->setFixedSize(36, 36);
+    connect(m_upButton, &QToolButton::clicked, this, &MainWindow::navigateUp);
+    m_locationLabel = new QLabel;
+    m_locationLabel->setObjectName("archiveLocation");
+    m_locationLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_searchEdit = new QLineEdit;
+    m_searchEdit->setObjectName("archiveSearch");
+    m_searchEdit->setPlaceholderText("搜索文件或路径…");
+    m_searchEdit->setClearButtonEnabled(true);
+    m_searchEdit->setFixedWidth(260);
+    m_searchTimer = new QTimer(this);
+    m_searchTimer->setSingleShot(true);
+    connect(m_searchTimer, &QTimer::timeout, this, &MainWindow::fillModel);
+    connect(m_searchEdit, &QLineEdit::textChanged, this, [this]() {
+        if (m_entries.size() < 500) fillModel();
+        else m_searchTimer->start(180);
+    });
+    locationBar->addWidget(m_upButton);
+    locationBar->addWidget(m_locationLabel, 1);
+    locationBar->addWidget(m_previewButton);
+    locationBar->addWidget(m_searchEdit);
+    archiveLayout->addLayout(locationBar);
     m_previewStack = new QStackedWidget;
-    auto* previewHint = new QLabel("选择文件可预览文本或图片");
-    previewHint->setAlignment(Qt::AlignCenter);
-    previewHint->setWordWrap(true);
-    previewHint->setProperty("i18n", "选择文件可预览文本或图片");
+    m_previewHint = new QLabel("选择文件可预览文本或图片");
+    m_previewHint->setAlignment(Qt::AlignCenter);
+    m_previewHint->setWordWrap(true);
+    m_previewHint->setProperty("i18n", "选择文件可预览文本或图片");
     m_previewText = new QPlainTextEdit;
     m_previewText->setReadOnly(true);
     m_previewImage = new QLabel;
     m_previewImage->setAlignment(Qt::AlignCenter);
-    m_previewStack->addWidget(previewHint);
+    m_previewStack->addWidget(m_previewHint);
     m_previewStack->addWidget(m_previewText);
     m_previewStack->addWidget(m_previewImage);
+    m_previewStack->setVisible(m_previewButton->isChecked());
+    m_previewTimer = new QTimer(this);
+    m_previewTimer->setSingleShot(true);
+    connect(m_previewTimer, &QTimer::timeout, this, &MainWindow::startPreview);
+    connect(m_previewButton, &QToolButton::toggled, this, [this](bool visible) {
+        m_previewStack->setVisible(visible);
+        QSettings().setValue(QStringLiteral("ui/previewVisible"), visible);
+        updatePreview();
+    });
     auto* splitter = new QSplitter(Qt::Horizontal);
     splitter->addWidget(card);
     splitter->addWidget(m_previewStack);
@@ -557,39 +899,104 @@ void MainWindow::buildUi() {
         updatePreview();
         updateActions();
     });
+    connect(table, &QTableView::doubleClicked, this, [this](const QModelIndex&) { openSelectedHere(); });
+    auto* goUp = new QAction(this);
+    goUp->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Up));
+    connect(goUp, &QAction::triggered, this, &MainWindow::navigateUp);
+    addAction(goUp);
 
     auto* empty = new DropLabel;
     empty->setAcceptDrops(true);
     empty->onDrop = [this](const QList<QUrl>& urls) { handleDropped(urls); };
+    empty->onDragActive = [this](bool active) { showDropHint(active); };
     auto* emptyLayout = new QVBoxLayout(empty);
-    emptyLayout->setAlignment(Qt::AlignCenter);
-    emptyLayout->setSpacing(8);
-    auto* picture = new QLabel(empty);
-    picture->setAlignment(Qt::AlignCenter);
-    picture->setPixmap(QPixmap(":/assets/empty.png").scaled(520, 292, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-    picture->setAttribute(Qt::WA_TransparentForMouseEvents);
-    auto* emptyTitle = new QLabel("把压缩包放在这里", empty);
+    emptyLayout->setContentsMargins(24, 18, 24, 18);
+    emptyLayout->setSpacing(18);
+    emptyLayout->addStretch(1);
+    auto* hero = new QFrame(empty);
+    hero->setObjectName("heroCard");
+    hero->setMaximumWidth(820);
+    hero->setMinimumHeight(250);
+    hero->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto* heroLayout = new QHBoxLayout(hero);
+    heroLayout->setContentsMargins(34, 24, 20, 24);
+    heroLayout->setSpacing(12);
+    auto* heroCopy = new QVBoxLayout;
+    heroCopy->setSpacing(10);
+    auto* eyebrow = new QLabel("青匣 · ZIP / 7Z / RAR", hero);
+    eyebrow->setObjectName("heroEyebrow");
+    eyebrow->setProperty("i18n", "青匣 · ZIP / 7Z / RAR");
+    auto* emptyTitle = new QLabel("打开压缩包，轻松整理", hero);
     emptyTitle->setObjectName("emptyTitle");
-    emptyTitle->setProperty("i18n", "把压缩包放在这里");
-    emptyTitle->setAlignment(Qt::AlignCenter);
+    emptyTitle->setProperty("i18n", "打开压缩包，轻松整理");
     emptyTitle->setAttribute(Qt::WA_TransparentForMouseEvents);
-    auto* emptyBody = new QLabel("拖入 zip / 7z 即可打开，拖入文件或文件夹则新建压缩", empty);
+    auto* emptyBody = new QLabel("拖入压缩包即可查看内容；拖入文件或文件夹即可创建压缩包。", hero);
     emptyBody->setObjectName("emptyBody");
-    emptyBody->setProperty("i18n", "拖入 zip / 7z 即可打开，拖入文件或文件夹则新建压缩");
-    emptyBody->setAlignment(Qt::AlignCenter);
+    emptyBody->setProperty("i18n", "拖入压缩包即可查看内容；拖入文件或文件夹即可创建压缩包。");
+    emptyBody->setWordWrap(true);
     emptyBody->setAttribute(Qt::WA_TransparentForMouseEvents);
     auto* emptyButtons = new QHBoxLayout;
-    emptyButtons->setAlignment(Qt::AlignCenter);
-    auto* emptyOpen = new QPushButton("打开压缩包", empty);
+    emptyButtons->setSpacing(10);
+    auto* emptyOpen = new QPushButton("打开压缩包", hero);
     emptyOpen->setObjectName("primaryButton");
-    auto* emptyNew = new QPushButton("新建压缩", empty);
+    emptyOpen->setProperty("i18n", "打开压缩包");
+    auto* emptyNew = new QPushButton("新建压缩", hero);
+    emptyNew->setProperty("i18n", "新建压缩");
     emptyButtons->addWidget(emptyOpen);
     emptyButtons->addWidget(emptyNew);
-    emptyLayout->addWidget(picture);
-    emptyLayout->addWidget(emptyTitle);
-    emptyLayout->addWidget(emptyBody);
-    emptyLayout->addSpacing(8);
-    emptyLayout->addLayout(emptyButtons);
+    emptyButtons->addStretch();
+    heroCopy->addStretch();
+    heroCopy->addWidget(eyebrow);
+    heroCopy->addWidget(emptyTitle);
+    heroCopy->addWidget(emptyBody);
+    heroCopy->addSpacing(6);
+    heroCopy->addLayout(emptyButtons);
+    heroCopy->addStretch();
+    heroLayout->addLayout(heroCopy, 1);
+    heroLayout->addWidget(new EmptyIllustration(hero));
+    emptyLayout->addWidget(hero, 0, Qt::AlignHCenter);
+    m_recentSection = new QWidget(empty);
+    m_recentSection->setMaximumWidth(820);
+    m_recentSection->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto* recentLayout = new QVBoxLayout(m_recentSection);
+    recentLayout->setContentsMargins(2, 0, 2, 0);
+    recentLayout->setSpacing(8);
+    auto* recentHeading = new QHBoxLayout;
+    auto* recentTitle = new QLabel("最近打开", m_recentSection);
+    recentTitle->setObjectName("recentTitle");
+    recentTitle->setProperty("i18n", "最近打开");
+    auto* clearRecent = new QPushButton("清空记录", m_recentSection);
+    clearRecent->setObjectName("quietButton");
+    clearRecent->setProperty("i18n", "清空记录");
+    recentHeading->addWidget(recentTitle);
+    recentHeading->addStretch();
+    recentHeading->addWidget(clearRecent);
+    recentLayout->addLayout(recentHeading);
+    m_recentList = new QListWidget(m_recentSection);
+    m_recentList->setObjectName("recentArchives");
+    m_recentList->setFixedHeight(40);
+    recentLayout->addWidget(m_recentList);
+    emptyLayout->addWidget(m_recentSection, 0, Qt::AlignHCenter);
+    emptyLayout->addStretch(1);
+    empty->onResize = [hero, this](int width) {
+        const int contentWidth = std::max(0, std::min(820, width - 56));
+        hero->setFixedWidth(contentWidth);
+        m_recentSection->setFixedWidth(contentWidth);
+    };
+    connect(m_recentList, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem* item) {
+        openArchive(item->data(Qt::UserRole).toString());
+    });
+    auto* openRecentShortcut = new QShortcut(QKeySequence(Qt::Key_Return), m_recentList);
+    connect(openRecentShortcut, &QShortcut::activated, this, [this]() {
+        if (QListWidgetItem* item = m_recentList->currentItem()) {
+            openArchive(item->data(Qt::UserRole).toString());
+        }
+    });
+    connect(clearRecent, &QPushButton::clicked, this, [this]() {
+        QSettings().remove(QStringLiteral("ui/recentArchives"));
+        refreshRecentArchives();
+    });
+    refreshRecentArchives();
     connect(emptyOpen, &QPushButton::clicked, this, &MainWindow::chooseAndOpen);
     connect(emptyNew, &QPushButton::clicked, this, [this]() { createArchive({}); });
     m_emptyPage = empty;
@@ -597,11 +1004,40 @@ void MainWindow::buildUi() {
     m_stack = new QStackedWidget(this);
     m_stack->addWidget(m_emptyPage);
     m_stack->addWidget(m_archivePage);
+    m_dropHint = new QLabel(m_stack);
+    m_dropHint->setObjectName("dropHint");
+    m_dropHint->setAlignment(Qt::AlignCenter);
+    m_dropHint->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_dropHint->hide();
+    m_stack->installEventFilter(this);
     setCentralWidget(m_stack);
-    statusBar()->showMessage("未打开压缩包");
+    statusBar()->showMessage(zipdesk::translate("拖入压缩包可打开，拖入文件或文件夹可新建压缩"));
     installItemShortcuts();
     applyLanguage();
     updateActions();
+}
+
+void MainWindow::showDropHint(bool visible) {
+    if (m_dropHint == nullptr || m_stack == nullptr) {
+        return;
+    }
+    if (!visible || m_busy) {
+        m_dropHint->hide();
+        return;
+    }
+    const QString text = m_path.empty() ? QStringLiteral("松开以打开压缩包或新建压缩")
+                                        : QStringLiteral("松开以追加到当前压缩包");
+    m_dropHint->setText(zipdesk::translate(text));
+    m_dropHint->setGeometry(m_stack->rect().adjusted(12, 8, -12, -8));
+    m_dropHint->raise();
+    m_dropHint->show();
+}
+
+bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == m_stack && event->type() == QEvent::Resize && m_dropHint != nullptr && m_dropHint->isVisible()) {
+        m_dropHint->setGeometry(m_stack->rect().adjusted(12, 8, -12, -8));
+    }
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::updateCaptionButtons() {
@@ -729,6 +1165,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
         event->ignore();
         return;
     }
+    QSettings().setValue(QStringLiteral("ui/windowGeometry"), saveGeometry());
     QMainWindow::closeEvent(event);
 }
 
@@ -747,6 +1184,9 @@ void MainWindow::runLaunch() {
     case zipdesk::LaunchAction::ExtractToFolder:
         shellExtract(true);
         break;
+    case zipdesk::LaunchAction::SmartExtract:
+        smartExtract(QString::fromStdWString(m_launch.paths.front()));
+        break;
     case zipdesk::LaunchAction::CompressZip:
         shellCompress(zipdesk::ArchiveFormat::Zip);
         break;
@@ -762,43 +1202,51 @@ void MainWindow::setBarItemVisible(QWidget* widget, bool visible) {
     if (widget == nullptr || m_toolbar == nullptr) {
         return;
     }
-    widget->setVisible(visible);
     for (QAction* action : m_toolbar->actions()) {
         if (m_toolbar->widgetForAction(action) == widget) {
             action->setVisible(visible);
+            widget->setVisible(visible);
             return;
         }
     }
+    widget->setVisible(visible);
 }
 
 void MainWindow::updateActions() {
     const bool open = !m_path.empty();
+    const bool editable = open && zipdesk::formatFromPath(m_path) != zipdesk::ArchiveFormat::Rar;
     const bool hasSelection = open && !selectedIndices().empty();
-    setBarItemVisible(m_openButton, !open);
+    const QString extractStyle = open ? QStringLiteral("primaryButton") : QStringLiteral("toolButton");
+    if (m_extractButton->objectName() != extractStyle) {
+        m_extractButton->setObjectName(extractStyle);
+        m_extractButton->setIcon(toolGlyph("解压", open ? QColor("#ffffff") : QColor("#3a6762")));
+        style()->unpolish(m_extractButton);
+        style()->polish(m_extractButton);
+    }
+    setBarItemVisible(m_openButton, true);
     setBarItemVisible(m_newButton, !open);
     setBarItemVisible(m_homeButton, open);
-    setBarItemVisible(m_testButton, open);
-    setBarItemVisible(m_repairButton, open);
-    setBarItemVisible(m_copyButton, open);
-    setBarItemVisible(m_moveButton, open);
-    setBarItemVisible(m_deleteButton, open);
-    setBarItemVisible(m_infoButton, open);
     setBarItemVisible(m_appendButton, open);
-    setBarItemVisible(m_extractButton, !open);
+    setBarItemVisible(m_extractButton, true);
+    setBarItemVisible(m_moreButton, open);
+    setBarItemVisible(m_previewButton, open);
     m_homeButton->setEnabled(open && !m_busy);
-    m_testButton->setEnabled(open && !m_busy);
-    m_repairButton->setEnabled(open && !m_busy);
-    m_appendButton->setEnabled(open && !m_busy);
-    m_copyButton->setEnabled(hasSelection && !m_busy);
-    m_moveButton->setEnabled(hasSelection && !m_busy);
-    m_deleteButton->setEnabled(hasSelection && !m_busy);
-    m_infoButton->setEnabled(hasSelection && !m_busy);
+    m_appendButton->setEnabled(editable && !m_busy);
+    m_moreTestAction->setEnabled(open && !m_busy);
+    m_moreRepairAction->setEnabled(open && !m_busy);
+    m_moreCopyAction->setEnabled(hasSelection && !m_busy);
+    m_moreMoveAction->setEnabled(hasSelection && editable && !m_busy);
+    m_moreDeleteAction->setEnabled(hasSelection && editable && !m_busy);
+    m_moreInfoAction->setEnabled(open && !m_busy);
+    m_previewButton->setEnabled(open && !m_busy);
     m_extractButton->setEnabled(!m_busy);
     if (m_extractSelectedAction != nullptr) {
         m_extractSelectedAction->setVisible(open);
+        m_extractSelectedAction->setEnabled(hasSelection && !m_busy);
     }
     if (m_extractSelectedFolderAction != nullptr) {
         m_extractSelectedFolderAction->setVisible(open);
+        m_extractSelectedFolderAction->setEnabled(hasSelection && !m_busy);
     }
     m_openAction->setEnabled(!m_busy);
     m_newAction->setEnabled(!m_busy);
@@ -821,10 +1269,18 @@ void MainWindow::toggleShellIntegration() {
 
 void MainWindow::setBusy(bool busy) {
     m_busy = busy;
+    if (busy) {
+        ++m_previewGeneration;
+        m_previewTimer->stop();
+        if (m_previewCancel) m_previewCancel->store(true);
+    } else if (m_previewButton->isChecked()) {
+        updatePreview();
+    }
     updateActions();
 }
 
 void MainWindow::showArchive(zipdesk::ArchiveInfo info) {
+    const bool differentArchive = m_path != info.path;
     m_path = info.path;
     if (!info.password.empty()) {
         m_password = info.password;
@@ -832,54 +1288,146 @@ void MainWindow::showArchive(zipdesk::ArchiveInfo info) {
     m_encrypted = info.encrypted || !m_password.empty();
     m_entries = std::move(info.entries);
     m_comment = info.comment;
-    m_prefix.clear();
+    if (differentArchive) {
+        m_prefix.clear();
+        m_searchEdit->clear();
+    } else {
+        while (!m_prefix.empty() && std::none_of(m_entries.begin(), m_entries.end(), [this](const auto& entry) {
+            return zipdesk::pathInside(m_prefix, entry.path);
+        })) {
+            const auto slash = m_prefix.find_last_of(L'/');
+            m_prefix = slash == std::wstring::npos ? std::wstring{} : m_prefix.substr(0, slash);
+        }
+    }
+    const QString openedPath = QString::fromStdWString(m_path);
+    QStringList recent = QSettings().value(QStringLiteral("ui/recentArchives")).toStringList();
+    recent.removeAll(openedPath);
+    recent.prepend(openedPath);
+    while (recent.size() > 5) {
+        recent.removeLast();
+    }
+    QSettings().setValue(QStringLiteral("ui/recentArchives"), recent);
+    refreshRecentArchives();
     fillModel();
     m_stack->setCurrentWidget(m_archivePage);
     const QString name = QFileInfo(QString::fromStdWString(m_path)).fileName();
-    setWindowTitle(name + " - 日常解压");
-    statusBar()->showMessage(QString("%1 项").arg(m_entries.size()));
+    setWindowTitle(name + (zipdesk::uiLanguage() == zipdesk::UiLanguage::English ? " - QingXia" : " - 青匣"));
+    statusBar()->showMessage(QString("%1 项 · %2").arg(m_entries.size()).arg(zipdesk::translate("拖入文件可追加到压缩包")));
     updateActions();
 }
 
-void MainWindow::fillModel() {
-    m_table->setSortingEnabled(false);
-    m_model->removeRows(0, m_model->rowCount());
-    if (!m_prefix.empty()) {
-        auto* up = new QStandardItem("..");
-        up->setData(0xFFFFFFFFu, Qt::UserRole);
-        up->setData(true, Qt::UserRole + 2);
-        up->setEditable(false);
-        QList<QStandardItem*> upRow;
-        upRow << up << new QStandardItem << new QStandardItem << new QStandardItem << new QStandardItem(QStringLiteral("目录"));
-        for (auto* item : upRow) {
-            item->setEditable(false);
-        }
-        m_model->appendRow(upRow);
+void MainWindow::refreshRecentArchives() {
+    if (m_recentList == nullptr) {
+        return;
     }
-    for (const zipdesk::ArchiveEntry& entry : m_entries) {
-        if (!m_prefix.empty() && (entry.path == m_prefix || !zipdesk::pathInside(m_prefix, entry.path))) {
+    m_recentList->clear();
+    const QStringList recent = QSettings().value(QStringLiteral("ui/recentArchives")).toStringList();
+    for (const QString& path : recent) {
+        if (path.isEmpty()) {
             continue;
         }
-        const QString path = QString::fromStdWString(entry.path).replace('/', '\\');
-        auto* name = new QStandardItem(path.isEmpty() ? QString::fromStdWString(entry.name) : path);
-        name->setData(entry.index, Qt::UserRole);
-        name->setEditable(false);
-        name->setDragEnabled(true);
-        name->setDropEnabled(false);
-
-        QList<QStandardItem*> row;
-        row << name;
-        row << new SizeItem(entry.isDir ? 0 : entry.size, entry.isDir ? QString("—") : humanSize(entry.size));
-        row << new SizeItem(entry.isDir ? 0 : entry.packSize, entry.isDir ? QString("—") : humanSize(entry.packSize));
-        auto* modified = new QStandardItem(entry.hasModified ? QString::fromStdWString(entry.modified) : QString());
-        modified->setEditable(false);
-        row << modified;
-        auto* type = new QStandardItem(entry.isDir ? "目录" : "文件");
-        type->setEditable(false);
-        row << type;
-        m_model->appendRow(row);
+        auto* item = new QListWidgetItem(QFileInfo(path).fileName(), m_recentList);
+        item->setIcon(archiveItemGlyph(false));
+        item->setData(Qt::UserRole, path);
+        item->setToolTip(QDir::toNativeSeparators(path));
     }
+    m_recentList->setFixedHeight(std::min(m_recentList->count(), 3) * 32 + 8);
+    m_recentSection->setVisible(m_recentList->count() > 0);
+}
+
+void MainWindow::fillModel() {
+    m_searchTimer->stop();
+    updateLocationBar();
+    m_table->setSortingEnabled(false);
+    const QString query = m_searchEdit->text().trimmed();
+    std::vector<ArchiveListModel::Row> rows;
+    rows.reserve(m_entries.size() + (!m_prefix.empty() && query.isEmpty() ? 1 : 0));
+    if (!m_prefix.empty() && query.isEmpty()) {
+        ArchiveListModel::Row up;
+        up.name = "..";
+        up.index = 0xFFFFFFFFu;
+        up.directory = true;
+        up.parent = true;
+        rows.push_back(std::move(up));
+    }
+    const auto normalizedPath = [](const zipdesk::ArchiveEntry& entry) {
+        QString path = QString::fromStdWString(entry.path).replace('\\', '/');
+        while (path.endsWith('/')) path.chop(1);
+        return path;
+    };
+    QHash<QString, const zipdesk::ArchiveEntry*> directoryEntries;
+    if (query.isEmpty()) {
+        for (const auto& entry : m_entries) {
+            if (entry.isDir) directoryEntries.insert(normalizedPath(entry), &entry);
+        }
+    }
+    const QString prefix = QString::fromStdWString(m_prefix);
+    const QString prefixWithSlash = prefix.isEmpty() ? QString() : prefix + '/';
+    QSet<QString> visibleDirectories;
+    const auto addRow = [&rows](const zipdesk::ArchiveEntry* entry, const QString& display,
+                               const QString& path, bool directory) {
+        ArchiveListModel::Row row;
+        row.name = display;
+        row.path = path;
+        row.directory = directory;
+        row.virtualDirectory = entry == nullptr;
+        if (entry) {
+            row.index = entry->index;
+            row.size = entry->size;
+            row.packed = entry->packSize;
+            if (entry->hasModified) row.modified = QString::fromStdWString(entry->modified);
+        }
+        rows.push_back(std::move(row));
+    };
+    for (const zipdesk::ArchiveEntry& entry : m_entries) {
+        const QString path = normalizedPath(entry);
+        if (path.isEmpty()) continue;
+        if (!query.isEmpty()) {
+            if (path.contains(query, Qt::CaseInsensitive)) {
+                addRow(&entry, QString(path).replace('/', '\\'), path, entry.isDir);
+            }
+            continue;
+        }
+        if (!prefixWithSlash.isEmpty() && !path.startsWith(prefixWithSlash)) continue;
+        const QString relative = path.mid(prefixWithSlash.size());
+        if (relative.isEmpty()) continue;
+        const int slash = relative.indexOf('/');
+        if (slash >= 0 || entry.isDir) {
+            const QString childName = slash >= 0 ? relative.left(slash) : relative;
+            const QString childPath = prefixWithSlash + childName;
+            if (visibleDirectories.contains(childPath)) continue;
+            visibleDirectories.insert(childPath);
+            addRow(directoryEntries.value(childPath, nullptr), childName, childPath, true);
+        } else {
+            addRow(&entry, relative, path, false);
+        }
+    }
+    m_model->setRows(std::move(rows));
     m_table->setSortingEnabled(true);
+    if (!m_path.empty()) {
+        statusBar()->showMessage(query.isEmpty()
+            ? QString("当前显示 %1 项 · 压缩包共 %2 项 · %3")
+                  .arg(m_model->rowCount() - (m_prefix.empty() ? 0 : 1))
+                  .arg(m_entries.size())
+                  .arg(zipdesk::translate("拖入文件可追加到压缩包"))
+            : QString("找到 %1 项").arg(m_model->rowCount()));
+    }
+}
+
+void MainWindow::updateLocationBar() {
+    const QString name = QFileInfo(QString::fromStdWString(m_path)).fileName();
+    const QString folder = QString::fromStdWString(m_prefix).replace('/', "  ›  ");
+    m_locationLabel->setText(folder.isEmpty() ? name : name + "  ›  " + folder);
+    m_locationLabel->setToolTip(QString::fromStdWString(m_prefix));
+    m_upButton->setEnabled(!m_prefix.empty());
+}
+
+void MainWindow::navigateUp() {
+    if (m_prefix.empty()) return;
+    const auto slash = m_prefix.find_last_of(L'/');
+    m_prefix = slash == std::wstring::npos ? std::wstring{} : m_prefix.substr(0, slash);
+    m_searchEdit->clear();
+    fillModel();
 }
 
 void MainWindow::storePending(zipdesk::ArchiveInfo info) {
@@ -901,8 +1449,15 @@ void MainWindow::begin(const QString& title,
         return;
     }
     m_onSuccess = std::move(onSuccess);
+    m_activeOperation = title;
     m_progress->reset(title);
     m_progress->setWindowModality(Qt::ApplicationModal);
+    if (isShellExtract()) {
+        setAttribute(Qt::WA_DontShowOnScreen, true);
+        hide();
+        m_progress->setParent(nullptr);
+        m_progress->setWindowFlags(Qt::Dialog | Qt::WindowTitleHint | Qt::WindowCloseButtonHint);
+    }
     m_progress->show();
     m_progress->raise();
     setBusy(true);
@@ -910,6 +1465,8 @@ void MainWindow::begin(const QString& title,
 }
 
 void MainWindow::onSucceeded() {
+    m_activeOperation.clear();
+    m_extractOutputDir.clear();
     m_progress->hide();
     setBusy(false);
     if (m_inDrag) {
@@ -926,9 +1483,15 @@ void MainWindow::onSucceeded() {
     if (callback) {
         callback();
     }
+    if (isShellAction()) {
+        QCoreApplication::quit();
+    }
 }
 
 void MainWindow::onFailed(const QString& message) {
+    const QString extractDir = m_extractOutputDir;
+    m_extractOutputDir.clear();
+    m_activeOperation.clear();
     m_progress->hide();
     setBusy(false);
     m_onSuccess = nullptr;
@@ -942,10 +1505,21 @@ void MainWindow::onFailed(const QString& message) {
         close();
         return;
     }
-    QMessageBox::warning(this, "日常解压", message);
+    if (extractDir.isEmpty()) {
+        QMessageBox::warning(isShellExtract() ? nullptr : this, "青匣", message);
+    } else {
+        showExtractIssue("解压未完成", message + "\n\n目标目录可能已有部分文件，请检查后重试。",
+                         extractDir, true);
+    }
+    if (isShellAction()) {
+        QCoreApplication::quit();
+    }
 }
 
 void MainWindow::onCancelled() {
+    const QString extractDir = m_extractOutputDir;
+    m_extractOutputDir.clear();
+    m_activeOperation.clear();
     m_progress->hide();
     setBusy(false);
     m_onSuccess = nullptr;
@@ -954,9 +1528,15 @@ void MainWindow::onCancelled() {
         m_dragOk = false;
         return;
     }
-    statusBar()->showMessage("已取消");
     if (m_closeAfterJob) {
         close();
+    } else if (extractDir.isEmpty()) {
+        statusBar()->showMessage("已取消");
+    } else {
+        showExtractIssue("解压已取消", "目标目录可能已有部分文件，请检查。", extractDir, false);
+    }
+    if (isShellAction()) {
+        QCoreApplication::quit();
     }
 }
 
@@ -974,19 +1554,19 @@ std::optional<QString> MainWindow::promptPassword(const QString& text) {
     return dialog.textValue();
 }
 
-std::optional<zipdesk::OverwritePolicy> MainWindow::askOverwrite() {
+std::optional<zipdesk::OverwritePolicy> MainWindow::askOverwrite(bool allowSkip) {
     QMessageBox box(m_progress->isVisible() ? static_cast<QWidget*>(m_progress) : static_cast<QWidget*>(this));
     box.setIcon(QMessageBox::Question);
     box.setWindowTitle("同名文件");
-    box.setText("目标位置已有同名文件。这一批要如何处理？");
+    box.setText(allowSkip ? "目标位置已有同名文件。这一批要如何处理？" : "目标位置已有同名文件。移动前必须完整解压，是否覆盖目标文件？");
     auto* overwrite = box.addButton("全部覆盖", QMessageBox::AcceptRole);
-    auto* skip = box.addButton("全部跳过", QMessageBox::ActionRole);
+    auto* skip = allowSkip ? box.addButton("全部跳过", QMessageBox::ActionRole) : nullptr;
     box.addButton("取消", QMessageBox::RejectRole);
     box.exec();
     if (box.clickedButton() == overwrite) {
         return zipdesk::OverwritePolicy::Overwrite;
     }
-    if (box.clickedButton() == skip) {
+    if (allowSkip && box.clickedButton() == skip) {
         return zipdesk::OverwritePolicy::Skip;
     }
     return std::nullopt;
@@ -999,13 +1579,51 @@ std::vector<std::uint32_t> MainWindow::selectedIndices() const {
     }
     const QModelIndexList rows = m_table->selectionModel()->selectedRows();
     indices.reserve(static_cast<std::size_t>(rows.size()));
+    QSet<std::uint32_t> seen;
     for (const QModelIndex& index : rows) {
         if (index.data(Qt::UserRole + 2).toBool()) {
             continue;
         }
-        indices.push_back(index.data(Qt::UserRole).toUInt());
+        if (index.data(Qt::UserRole + 4).toBool()) {
+            const std::wstring folder = index.data(Qt::UserRole + 3).toString().toStdWString();
+            for (const auto& entry : m_entries) {
+                if (zipdesk::pathInside(folder, entry.path) && !seen.contains(entry.index)) {
+                    seen.insert(entry.index);
+                    indices.push_back(entry.index);
+                }
+            }
+        } else {
+            const auto itemIndex = index.data(Qt::UserRole).toUInt();
+            if (!seen.contains(itemIndex)) {
+                seen.insert(itemIndex);
+                indices.push_back(itemIndex);
+            }
+        }
     }
     return indices;
+}
+
+QStringList MainWindow::selectedTopLevelPaths() const {
+    struct SelectedPath { QString path; bool directory; };
+    QList<SelectedPath> selected;
+    for (const QModelIndex& index : m_table->selectionModel()->selectedRows()) {
+        if (index.data(Qt::UserRole + 2).toBool()) continue;
+        const QString path = index.data(Qt::UserRole + 3).toString();
+        if (!path.isEmpty()) selected.push_back({path, index.data(Qt::UserRole + 5).toBool()});
+    }
+    QStringList result;
+    for (const auto& candidate : selected) {
+        bool covered = false;
+        for (const auto& other : selected) {
+            if (other.directory && other.path != candidate.path &&
+                candidate.path.startsWith(other.path + '/')) {
+                covered = true;
+                break;
+            }
+        }
+        if (!covered && !result.contains(candidate.path)) result.push_back(candidate.path);
+    }
+    return result;
 }
 
 void MainWindow::chooseAndOpen() {
@@ -1017,11 +1635,11 @@ void MainWindow::chooseAndOpen() {
 
 void MainWindow::openArchive(const QString& path) {
     if (path.isEmpty() || !QFileInfo::exists(path)) {
-        QMessageBox::warning(this, "日常解压", "找不到压缩包。");
+        QMessageBox::warning(this, "青匣", "找不到压缩包。");
         return;
     }
     if (!zipdesk::isArchivePath(path.toStdWString())) {
-        QMessageBox::warning(this, "日常解压", "只支持 zip 和 7z。");
+        QMessageBox::warning(this, "青匣", "只支持 zip、7z 和 rar。");
         return;
     }
     const bool sameArchive = m_path == path.toStdWString();
@@ -1052,7 +1670,7 @@ void MainWindow::createArchive(const QStringList& inputs) {
     const zipdesk::CompressRequest request = dialog.request();
     const QString output = QString::fromStdWString(request.outputPath);
     if (QFileInfo::exists(output)) {
-        const auto answer = QMessageBox::question(this, "日常解压", output + " 已存在，要覆盖吗？");
+        const auto answer = QMessageBox::question(this, "青匣", output + " 已存在，要覆盖吗？");
         if (answer != QMessageBox::Yes) {
             return;
         }
@@ -1063,42 +1681,54 @@ void MainWindow::createArchive(const QStringList& inputs) {
         [this, output]() { finishCompress(output); });
 }
 
-int MainWindow::compressFinishMode() const {
-    return QSettings().value(QStringLiteral("compress/finishMode"), 0).toInt() == 1 ? 1 : 0;
+bool MainWindow::isShellAction() const {
+    return m_launch.action == zipdesk::LaunchAction::CompressZip ||
+           m_launch.action == zipdesk::LaunchAction::Compress7z ||
+           m_launch.action == zipdesk::LaunchAction::ExtractHere ||
+           m_launch.action == zipdesk::LaunchAction::ExtractToFolder ||
+           m_launch.action == zipdesk::LaunchAction::SmartExtract;
+}
+
+bool MainWindow::isShellExtract() const {
+    return m_launch.action == zipdesk::LaunchAction::ExtractHere ||
+           m_launch.action == zipdesk::LaunchAction::ExtractToFolder ||
+           m_launch.action == zipdesk::LaunchAction::SmartExtract;
 }
 
 void MainWindow::finishCompress(const QString& output) {
     const QString native = QDir::toNativeSeparators(QFileInfo(output).absoluteFilePath());
-    if (compressFinishMode() == 0) {
-        QProcess::startDetached(QStringLiteral("explorer.exe"), {QStringLiteral("/select,") + native});
-        statusBar()->showMessage("已生成 " + native);
-        return;
-    }
+    QProcess::startDetached(QStringLiteral("explorer.exe"), {QStringLiteral("/select,") + native});
+    statusBar()->showMessage("已生成 " + native);
+}
 
-    QDialog dialog(this);
-    dialog.setWindowTitle("压缩完成");
-    dialog.setModal(true);
-    auto* layout = new QVBoxLayout(&dialog);
-    layout->setContentsMargins(28, 28, 28, 24);
-    layout->setSpacing(18);
-    auto* text = new QLabel("已生成\n" + native, &dialog);
-    text->setAlignment(Qt::AlignCenter);
-    text->setWordWrap(true);
-    layout->addWidget(text);
-    auto* buttons = new QHBoxLayout;
-    buttons->addStretch();
-    auto* openFile = new QPushButton("打开文件", &dialog);
-    openFile->setObjectName("primaryButton");
-    auto* close = new QPushButton("关闭", &dialog);
-    buttons->addWidget(openFile);
-    buttons->addWidget(close);
-    buttons->addStretch();
-    layout->addLayout(buttons);
-    dialog.resize(440, 180);
-    connect(openFile, &QPushButton::clicked, &dialog, [&dialog]() { dialog.done(1); });
-    connect(close, &QPushButton::clicked, &dialog, &QDialog::reject);
-    if (dialog.exec() == 1) {
-        openArchive(output);
+void MainWindow::finishExtract(const QString& directory, bool skippedExisting) {
+    statusBar()->showMessage("解压操作已完成：" + directory);
+    QMessageBox box(isShellExtract() ? nullptr : this);
+    box.setWindowTitle("解压完成");
+    box.setText("解压操作已完成。" +
+                (skippedExisting ? QString("\n同名文件已按“全部跳过”规则处理。") : QString()) +
+                "\n目标目录：\n" + QDir::toNativeSeparators(directory));
+    auto* open = box.addButton("打开目标文件夹", QMessageBox::ActionRole);
+    box.addButton("完成", QMessageBox::AcceptRole);
+    box.exec();
+    if (box.clickedButton() == open) {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(directory));
+    }
+}
+void MainWindow::showExtractIssue(const QString& title, const QString& message,
+                                  const QString& directory, bool failed) {
+    QMessageBox box(isShellExtract() ? nullptr : this);
+    box.setIcon(failed ? QMessageBox::Warning : QMessageBox::Information);
+    box.setWindowTitle(title);
+    box.setText(message + "\n\n目标目录：\n" + QDir::toNativeSeparators(directory));
+    QPushButton* open = nullptr;
+    if (QDir(directory).exists()) {
+        open = box.addButton("打开目标文件夹", QMessageBox::ActionRole);
+    }
+    box.addButton("关闭", QMessageBox::AcceptRole);
+    box.exec();
+    if (open != nullptr && box.clickedButton() == open) {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(directory));
     }
 }
 
@@ -1110,12 +1740,13 @@ void MainWindow::returnHome() {
     m_password.clear();
     m_entries.clear();
     m_prefix.clear();
+    m_searchEdit->clear();
     m_comment.clear();
     m_encrypted = false;
-    m_model->removeRows(0, m_model->rowCount());
+    m_model->setRows({});
     m_stack->setCurrentWidget(m_emptyPage);
-    setWindowTitle("日常解压");
-    statusBar()->showMessage("未打开压缩包");
+    setWindowTitle(zipdesk::uiLanguage() == zipdesk::UiLanguage::English ? "QingXia" : "青匣");
+    statusBar()->showMessage(zipdesk::translate("拖入压缩包可打开，拖入文件或文件夹可新建压缩"));
     updateActions();
 }
 
@@ -1125,21 +1756,12 @@ void MainWindow::showSettings() {
     auto* layout = new QVBoxLayout(&dialog);
     layout->setContentsMargins(24, 24, 24, 20);
     layout->setSpacing(12);
-    auto* title = new QLabel("压缩完成后", &dialog);
-    layout->addWidget(title);
-    auto* explorer = new QRadioButton("在资源管理器中打开所在目录，并选中压缩包", &dialog);
-    auto* prompt = new QRadioButton("弹出提示，可选择打开文件或关闭", &dialog);
-    if (compressFinishMode() == 1) {
-        prompt->setChecked(true);
-    } else {
-        explorer->setChecked(true);
-    }
-    layout->addWidget(explorer);
-    layout->addWidget(prompt);
-    layout->addSpacing(8);
     layout->addWidget(new QLabel("界面语言", &dialog));
     auto* chinese = new QRadioButton("简体中文", &dialog);
     auto* english = new QRadioButton("English", &dialog);
+    QButtonGroup languageGroup(&dialog);
+    languageGroup.addButton(chinese);
+    languageGroup.addButton(english);
     if (zipdesk::uiLanguage() == zipdesk::UiLanguage::English) {
         english->setChecked(true);
     } else {
@@ -1163,7 +1785,7 @@ void MainWindow::showSettings() {
     layout->addLayout(buttons);
     connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
     connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
-    dialog.resize(520, 400);
+    dialog.resize(520, 280);
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
@@ -1171,7 +1793,6 @@ void MainWindow::showSettings() {
     if (shell->isChecked() != integrated) {
         toggleShellIntegration();
     }
-    QSettings().setValue(QStringLiteral("compress/finishMode"), prompt->isChecked() ? 1 : 0);
     zipdesk::setUiLanguage(english->isChecked() ? zipdesk::UiLanguage::English : zipdesk::UiLanguage::Chinese);
     applyLanguage();
 }
@@ -1190,14 +1811,24 @@ void MainWindow::applyLanguage() {
             button->setToolTip(text);
         } else if (auto* label = qobject_cast<QLabel*>(widget)) {
             label->setText(zipdesk::translate(key));
+        } else if (auto* button = qobject_cast<QPushButton*>(widget)) {
+            button->setText(zipdesk::translate(key));
         }
     };
     for (QWidget* widget : findChildren<QWidget*>()) {
         refresh(widget);
     }
-    if (m_path.empty()) {
-        setWindowTitle(zipdesk::uiLanguage() == zipdesk::UiLanguage::English ? "ZipDesk" : "日常解压");
+    for (QAction* action : findChildren<QAction*>()) {
+        const QString key = action->property("i18n").toString();
+        if (!key.isEmpty()) {
+            action->setText(zipdesk::translate(key));
+        }
     }
+    const QString appName = zipdesk::uiLanguage() == zipdesk::UiLanguage::English ? "QingXia" : "青匣";
+    setWindowTitle(m_path.empty() ? appName : QFileInfo(QString::fromStdWString(m_path)).fileName() + " - " + appName);
+    m_upButton->setToolTip(zipdesk::translate("上一级") + " (Alt+↑)");
+    m_searchEdit->setPlaceholderText(zipdesk::uiLanguage() == zipdesk::UiLanguage::English
+        ? "Search files or paths…" : "搜索文件或路径…");
     if (m_pinButton != nullptr) {
         m_pinButton->setToolTip(zipdesk::translate(m_stayOnTop ? "取消钉住" : "钉在前台"));
     }
@@ -1244,7 +1875,7 @@ void MainWindow::extractArchive(bool selectedOnly, bool namedFolder) {
             try {
                 outputDir = namedFolderFor(archive, &created);
             } catch (const zipdesk::ArchiveError& error) {
-                QMessageBox::warning(this, "日常解压", QString::fromStdWString(error.message()));
+                QMessageBox::warning(this, "青匣", QString::fromStdWString(error.message()));
                 return;
             }
         } else {
@@ -1255,9 +1886,11 @@ void MainWindow::extractArchive(bool selectedOnly, bool namedFolder) {
             outputDir = picked.toStdWString();
         }
         const QString finishedDir = QString::fromStdWString(outputDir);
+        const auto skipped = std::make_shared<std::atomic_bool>(false);
+        m_extractOutputDir = finishedDir;
         begin(
             "正在解压",
-            [this, archive, outputDir, created](const zipdesk::OperationHooks& hooks) {
+            [this, archive, outputDir, created, skipped](const zipdesk::OperationHooks& hooks) {
                 const zipdesk::ArchiveInfo info = m_service.read(archive, L"", hooks);
                 zipdesk::OverwritePolicy policy = zipdesk::OverwritePolicy::Overwrite;
                 if (zipdesk::hasConflicts(info.entries, {}, outputDir)) {
@@ -1267,11 +1900,12 @@ void MainWindow::extractArchive(bool selectedOnly, bool namedFolder) {
                     if (!choice) {
                         if (created) {
                             std::error_code error;
-                            std::filesystem::remove_all(outputDir, error);
+                            std::filesystem::remove(outputDir, error);
                         }
                         throw zipdesk::ArchiveError(zipdesk::ErrorKind::Cancelled, L"已取消");
                     }
                     policy = *choice;
+                    skipped->store(policy == zipdesk::OverwritePolicy::Skip);
                 }
                 zipdesk::ExtractRequest request;
                 request.archivePath = archive;
@@ -1282,21 +1916,20 @@ void MainWindow::extractArchive(bool selectedOnly, bool namedFolder) {
                 request.relativePaths = relativePathsOf(info.entries, {});
                 m_service.extract(request, hooks);
             },
-            [this, finishedDir]() {
-                statusBar()->showMessage("已解压到 " + finishedDir);
-                QMessageBox::information(this, "日常解压", "解压完成。\n" + finishedDir);
+            [this, finishedDir, skipped]() {
+                finishExtract(finishedDir, skipped->load());
             });
         return;
     }
     if (m_entries.empty()) {
-        QMessageBox::information(this, "日常解压", "这个压缩包是空的。");
+        QMessageBox::information(this, "青匣", "这个压缩包是空的。");
         return;
     }
     std::vector<std::uint32_t> indices;
     if (selectedOnly) {
         indices = selectedIndices();
         if (indices.empty()) {
-            QMessageBox::information(this, "日常解压", "请先选择要解压的项目。");
+            QMessageBox::information(this, "青匣", "请先选择要解压的项目。");
             return;
         }
         indices = zipdesk::expandSelection(m_entries, indices);
@@ -1308,7 +1941,7 @@ void MainWindow::extractArchive(bool selectedOnly, bool namedFolder) {
         try {
             outputDir = namedFolderFor(m_path, &removeOnCancel);
         } catch (const zipdesk::ArchiveError& error) {
-            QMessageBox::warning(this, "日常解压", QString::fromStdWString(error.message()));
+            QMessageBox::warning(this, "青匣", QString::fromStdWString(error.message()));
             return;
         }
     } else {
@@ -1326,7 +1959,7 @@ void MainWindow::extractArchive(bool selectedOnly, bool namedFolder) {
         if (!choice) {
             if (removeOnCancel) {
                 std::error_code error;
-                std::filesystem::remove_all(outputDir, error);
+                std::filesystem::remove(outputDir, error);
             }
             return;
         }
@@ -1342,25 +1975,73 @@ void MainWindow::extractArchive(bool selectedOnly, bool namedFolder) {
     request.overwrite = policy;
     request.removeOutputOnCancel = removeOnCancel;
     const QString finishedDir = QString::fromStdWString(outputDir);
+    const bool skippedExisting = policy == zipdesk::OverwritePolicy::Skip;
+    m_extractOutputDir = finishedDir;
     begin(
         "正在解压",
         [this, request](const zipdesk::OperationHooks& hooks) { m_service.extract(request, hooks); },
-        [this, finishedDir]() {
-            statusBar()->showMessage("已解压到 " + finishedDir);
-            QMessageBox::information(this, "日常解压", "解压完成。\n" + finishedDir);
+        [this, finishedDir, skippedExisting]() {
+            finishExtract(finishedDir, skippedExisting);
         });
 }
 
+void MainWindow::smartExtract(const QString& path) {
+    const std::wstring archive = QFileInfo(path).absoluteFilePath().toStdWString();
+    const std::wstring password = archive == m_path ? m_password : L"";
+    const auto result = std::make_shared<QString>(QFileInfo(path).absolutePath());
+    const auto skipped = std::make_shared<std::atomic_bool>(false);
+    m_extractOutputDir = *result;
+    begin("正在解压",
+        [this, archive, password, result, skipped](const zipdesk::OperationHooks& hooks) {
+            const auto info = m_service.read(archive, password, hooks);
+            const auto destination = zipdesk::smartExtractDestination(archive, info.entries);
+            QMetaObject::invokeMethod(this, [&]() {
+                *result = QString::fromStdWString(destination.resultDir);
+                m_extractOutputDir = *result;
+            }, Qt::BlockingQueuedConnection);
+            const bool created = std::filesystem::create_directories(destination.outputDir);
+            auto policy = zipdesk::OverwritePolicy::Overwrite;
+            if (zipdesk::hasConflicts(info.entries, {}, destination.outputDir)) {
+                std::optional<zipdesk::OverwritePolicy> choice;
+                QMetaObject::invokeMethod(this, [&]() { choice = askOverwrite(); },
+                                          Qt::BlockingQueuedConnection);
+                if (!choice) {
+                    if (created) {
+                        std::error_code error;
+                        std::filesystem::remove(destination.outputDir, error);
+                    }
+                    throw zipdesk::ArchiveError(zipdesk::ErrorKind::Cancelled, L"已取消");
+                }
+                policy = *choice;
+                skipped->store(policy == zipdesk::OverwritePolicy::Skip);
+            }
+            zipdesk::ExtractRequest request;
+            request.archivePath = archive;
+            request.outputDir = destination.outputDir;
+            request.password = info.password;
+            request.overwrite = policy;
+            request.removeOutputOnCancel = created;
+            request.relativePaths = relativePathsOf(info.entries, {});
+            m_service.extract(request, hooks);
+        },
+        [this, result, skipped]() { finishExtract(*result, skipped->load()); });
+}
 void MainWindow::shellExtract(bool namedFolder) {
     if (m_launch.paths.empty()) {
+        QCoreApplication::quit();
         return;
     }
     const std::wstring archive = m_launch.paths.front();
+    const std::filesystem::path archiveFile(archive);
+    const std::filesystem::path destination = namedFolder
+        ? archiveFile.parent_path() / archiveFile.stem() : archiveFile.parent_path();
+    const QString finishedDir = QString::fromStdWString(destination.wstring());
+    const auto skipped = std::make_shared<std::atomic_bool>(false);
+    m_extractOutputDir = finishedDir;
     begin(
         "正在解压",
-        [this, archive, namedFolder](const zipdesk::OperationHooks& hooks) {
+        [this, archive, namedFolder, skipped](const zipdesk::OperationHooks& hooks) {
             const zipdesk::ArchiveInfo info = m_service.read(archive, L"", hooks);
-            storePending(info);
             bool created = false;
             std::wstring outputDir;
             if (namedFolder) {
@@ -1376,11 +2057,12 @@ void MainWindow::shellExtract(bool namedFolder) {
                 if (!choice) {
                     if (created) {
                         std::error_code error;
-                        std::filesystem::remove_all(outputDir, error);
+                        std::filesystem::remove(outputDir, error);
                     }
                     throw zipdesk::ArchiveError(zipdesk::ErrorKind::Cancelled, L"已取消");
                 }
                 policy = *choice;
+                skipped->store(policy == zipdesk::OverwritePolicy::Skip);
             }
             zipdesk::ExtractRequest request;
             request.archivePath = archive;
@@ -1391,14 +2073,12 @@ void MainWindow::shellExtract(bool namedFolder) {
             request.relativePaths = relativePathsOf(info.entries, {});
             m_service.extract(request, hooks);
         },
-        [this]() {
-            showArchive(takePending());
-            QMessageBox::information(this, "日常解压", "解压完成。");
-        });
+        [this, finishedDir, skipped]() { finishExtract(finishedDir, skipped->load()); });
 }
 
 void MainWindow::shellCompress(zipdesk::ArchiveFormat format) {
     if (m_launch.paths.empty()) {
+        QCoreApplication::quit();
         return;
     }
     QStringList sources;
@@ -1409,14 +2089,16 @@ void MainWindow::shellCompress(zipdesk::ArchiveFormat format) {
         }
     }
     if (sources.isEmpty()) {
-        QMessageBox::warning(this, "日常解压", "找不到要压缩的文件。");
+        QMessageBox::warning(this, "青匣", "找不到要压缩的文件。");
+        QCoreApplication::quit();
         return;
     }
     const QString extension = format == zipdesk::ArchiveFormat::Zip ? ".zip" : ".7z";
     const QString output = defaultArchivePath(sources, extension);
     if (QFileInfo::exists(output)) {
-        const auto answer = QMessageBox::question(this, "日常解压", output + " 已存在，要覆盖吗？");
+        const auto answer = QMessageBox::question(this, "青匣", output + " 已存在，要覆盖吗？");
         if (answer != QMessageBox::Yes) {
+            QCoreApplication::quit();
             return;
         }
     }
@@ -1430,10 +2112,7 @@ void MainWindow::shellCompress(zipdesk::ArchiveFormat format) {
     begin(
         "正在压缩",
         [this, request](const zipdesk::OperationHooks& hooks) { m_service.compress(request, hooks); },
-        [this, output]() {
-            QMessageBox::information(this, "日常解压", "压缩完成。");
-            openArchive(output);
-        });
+        [this, output]() { finishCompress(output); });
 }
 
 void MainWindow::handleDropped(const QList<QUrl>& urls) {
@@ -1502,7 +2181,7 @@ void MainWindow::dragOutSelection() {
         if (message.contains("密码")) {
             m_password.clear();
         }
-        QMessageBox::warning(this, "日常解压", message);
+        QMessageBox::warning(this, "青匣", message);
     }
 }
 
@@ -1532,34 +2211,9 @@ QList<QUrl> MainWindow::produceDragUrls(const QString& tempDir, const std::vecto
     }
 
     QList<QUrl> urls;
-    const std::vector<std::uint32_t> selected = selectedIndices();
-    for (const std::uint32_t index : selected) {
-        const auto entry = std::find_if(m_entries.begin(), m_entries.end(), [index](const zipdesk::ArchiveEntry& item) {
-            return item.index == index;
-        });
-        if (entry == m_entries.end()) {
-            continue;
-        }
-        bool covered = false;
-        for (const std::uint32_t otherIndex : selected) {
-            if (otherIndex == index) {
-                continue;
-            }
-            const auto other = std::find_if(m_entries.begin(), m_entries.end(), [otherIndex](const zipdesk::ArchiveEntry& item) {
-                return item.index == otherIndex;
-            });
-            if (other != m_entries.end() && other->isDir && zipdesk::pathInside(other->path, entry->path)) {
-                covered = true;
-                break;
-            }
-        }
-        if (covered) {
-            continue;
-        }
-        const QString path = QDir(tempDir).filePath(QString::fromStdWString(entry->path));
-        if (QFileInfo::exists(path)) {
-            urls.push_back(QUrl::fromLocalFile(path));
-        }
+    for (const QString& relative : selectedTopLevelPaths()) {
+        const QString path = QDir(tempDir).filePath(relative);
+        if (QFileInfo::exists(path)) urls.push_back(QUrl::fromLocalFile(path));
     }
     return urls;
 }

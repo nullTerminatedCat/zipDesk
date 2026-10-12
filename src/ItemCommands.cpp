@@ -4,6 +4,7 @@
 #include "Lang.hpp"
 
 #include <QLabel>
+#include <QLineEdit>
 #include <QStackedWidget>
 
 #include <QAction>
@@ -16,7 +17,10 @@
 #include <QDialog>
 #include <QDir>
 #include <QFile>
+#include <QSaveFile>
+#include <QTemporaryDir>
 #include <QHBoxLayout>
+#include <QHash>
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -29,9 +33,14 @@
 #include <QProcess>
 #include <QStatusBar>
 #include <QTableView>
+#include <QToolButton>
+#include <QThread>
+#include <QTimer>
 #include <QUrl>
 
 #include <filesystem>
+#include <algorithm>
+#include <memory>
 
 namespace {
 
@@ -53,21 +62,91 @@ QString parentPathOf(const std::wstring& path) {
     return QString::fromStdWString(path.substr(0, slash));
 }
 
-void splitFile(const QString& source, const QString& directory, qint64 partSize) {
+bool writeFully(QIODevice& output, const QByteArray& bytes) {
+    qsizetype written = 0;
+    while (written < bytes.size()) {
+        const qint64 count = output.write(bytes.constData() + written, bytes.size() - written);
+        if (count <= 0) {
+            return false;
+        }
+        written += static_cast<qsizetype>(count);
+    }
+    return true;
+}
+
+QString splitFile(const QString& source, const QString& directory, qint64 partSize) {
     QFile input(source);
     if (!input.open(QIODevice::ReadOnly)) {
-        return;
+        return "无法读取源文件：" + input.errorString();
     }
+    if (partSize <= 0) {
+        return "分片大小必须大于零。";
+    }
+    QTemporaryDir staging(QDir(directory).filePath(".zipdesk-split-XXXXXX"));
+    if (!staging.isValid()) {
+        return "无法在目标文件夹创建分片暂存目录。";
+    }
+
     const QString base = QFileInfo(source).fileName();
+    QStringList names;
     int part = 1;
-    while (!input.atEnd()) {
-        QFile output(QDir(directory).filePath(QString("%1.%2").arg(base).arg(part, 3, 10, QChar('0'))));
+    do {
+        const QString name = QString("%1.%2").arg(base).arg(part++, 3, 10, QChar('0'));
+        QSaveFile output(QDir(staging.path()).filePath(name));
         if (!output.open(QIODevice::WriteOnly)) {
-            return;
+            return "无法创建分片 " + name + "：" + output.errorString();
         }
-        output.write(input.read(partSize));
-        ++part;
+        qint64 remaining = partSize;
+        while (remaining > 0 && !input.atEnd()) {
+            const QByteArray bytes = input.read(std::min<qint64>(remaining, 1024 * 1024));
+            if (bytes.isEmpty()) {
+                if (input.error() != QFileDevice::NoError) {
+                    return "读取源文件失败：" + input.errorString();
+                }
+                break;
+            }
+            if (!writeFully(output, bytes)) {
+                return "写入分片 " + name + " 失败：" + output.errorString();
+            }
+            remaining -= bytes.size();
+        }
+        if (input.error() != QFileDevice::NoError) {
+            return "读取源文件失败：" + input.errorString();
+        }
+        if (!output.commit()) {
+            return "保存分片 " + name + " 失败：" + output.errorString();
+        }
+        names.push_back(name);
+    } while (!input.atEnd());
+
+    const QDir destination(directory);
+    for (const QString& name : names) {
+        const QFileInfo existing(destination.filePath(name));
+        if (existing.exists() || existing.isSymLink()) {
+            return "目标位置已有同名分片 " + name + "。请更换目录或先移走旧分片。";
+        }
     }
+
+    QStringList installed;
+    for (const QString& name : names) {
+        const QString target = destination.filePath(name);
+        if (!QFile::rename(QDir(staging.path()).filePath(name), target)) {
+            QStringList leftovers;
+            for (const QString& written : installed) {
+                const QString path = destination.filePath(written);
+                if (!QFile::remove(path)) {
+                    leftovers.push_back(path);
+                }
+            }
+            QString message = "无法提交分片 " + name + "；已清理本次生成的分片。";
+            if (!leftovers.isEmpty()) {
+                message = "无法提交分片 " + name + "；以下本次生成的文件未能清理，请手动检查：\n" + leftovers.join("\n");
+            }
+            return message;
+        }
+        installed.push_back(name);
+    }
+    return {};
 }
 
 }  // namespace
@@ -128,10 +207,13 @@ void MainWindow::showItemMenu(const QPoint& position) {
     if (!index.isValid() || m_path.empty()) {
         return;
     }
-    m_table->selectRow(index.row());
+    if (!m_table->selectionModel()->isRowSelected(index.row(), QModelIndex())) {
+        m_table->selectRow(index.row());
+    }
+    m_table->selectionModel()->setCurrentIndex(index, QItemSelectionModel::NoUpdate);
     QMenu menu(this);
     const auto label = [](const char* zh) { return zipdesk::translate(QString::fromUtf8(zh)); };
-    menu.addAction(label("打开"), Qt::Key_Return, this, [this]() { openSelected(false); });
+    menu.addAction(label("打开"), Qt::Key_Return, this, [this]() { openSelectedHere(); });
     menu.addAction(label("当前窗口打开"), QKeySequence(Qt::CTRL | Qt::Key_PageDown), this, [this]() { openSelectedHere(); });
     menu.addAction(label("新建窗口打开"), QKeySequence(Qt::SHIFT | Qt::Key_Return), this, [this]() { openSelected(true); });
     menu.addAction(label("查看"), Qt::Key_F3, this, [this]() { viewSelected(); });
@@ -158,22 +240,22 @@ void MainWindow::showItemMenu(const QPoint& position) {
 }
 
 std::optional<zipdesk::ArchiveEntry> MainWindow::selectedEntry() const {
-    const auto entries = selectedEntries();
-    if (entries.size() != 1) {
-        return std::nullopt;
-    }
-    return entries.front();
+    const auto rows = m_table->selectionModel()->selectedRows();
+    if (rows.size() != 1 || rows.front().data(Qt::UserRole + 4).toBool()) return std::nullopt;
+    const auto indices = selectedIndices();
+    if (indices.size() != 1) return std::nullopt;
+    const auto found = std::find_if(m_entries.begin(), m_entries.end(),
+        [index = indices.front()](const auto& entry) { return entry.index == index; });
+    return found == m_entries.end() ? std::nullopt : std::optional(*found);
 }
 
 std::vector<zipdesk::ArchiveEntry> MainWindow::selectedEntries() const {
     std::vector<zipdesk::ArchiveEntry> result;
+    QHash<std::uint32_t, const zipdesk::ArchiveEntry*> byIndex;
+    byIndex.reserve(static_cast<qsizetype>(m_entries.size()));
+    for (const auto& entry : m_entries) byIndex.insert(entry.index, &entry);
     for (const std::uint32_t index : selectedIndices()) {
-        for (const zipdesk::ArchiveEntry& entry : m_entries) {
-            if (entry.index == index) {
-                result.push_back(entry);
-                break;
-            }
-        }
+        if (const auto* entry = byIndex.value(index, nullptr)) result.push_back(*entry);
     }
     return result;
 }
@@ -187,7 +269,8 @@ void MainWindow::reloadArchive() {
 
 void MainWindow::extractEntries(const std::vector<zipdesk::ArchiveEntry>& entries,
                                 const QString& directory,
-                                const std::function<void()>& after) {
+                                const std::function<void()>& after,
+                                bool checkConflicts, bool allowSkip) {
     if (entries.empty() || m_path.empty()) {
         return;
     }
@@ -195,13 +278,31 @@ void MainWindow::extractEntries(const std::vector<zipdesk::ArchiveEntry>& entrie
     request.archivePath = m_path;
     request.outputDir = directory.toStdWString();
     request.password = m_password;
+    std::vector<std::uint32_t> selected;
+    selected.reserve(entries.size());
     for (const zipdesk::ArchiveEntry& entry : entries) {
-        request.indices.push_back(entry.index);
-        request.relativePaths.push_back(entry.path);
+        selected.push_back(entry.index);
+    }
+    request.indices = zipdesk::expandSelection(m_entries, selected);
+    for (const zipdesk::ArchiveEntry& entry : m_entries) {
+        if (std::find(request.indices.begin(), request.indices.end(), entry.index) != request.indices.end()) {
+            request.relativePaths.push_back(entry.path);
+        }
+    }
+    if (checkConflicts && zipdesk::hasConflicts(m_entries, request.indices, request.outputDir)) {
+        const auto choice = askOverwrite(allowSkip);
+        if (!choice) {
+            return;
+        }
+        request.overwrite = *choice;
     }
     const bool created = !QDir(directory).exists();
-    QDir().mkpath(directory);
+    if (!QDir().mkpath(directory)) {
+        QMessageBox::warning(this, "解压", "无法创建目标文件夹：\n" + directory);
+        return;
+    }
     request.removeOutputOnCancel = created;
+    if (checkConflicts) m_extractOutputDir = directory;
     begin("正在解压", [this, request](const zipdesk::OperationHooks& hooks) { m_service.extract(request, hooks); }, after);
 }
 
@@ -227,19 +328,18 @@ void MainWindow::openSelected(bool newWindow) {
 void MainWindow::openSelectedHere() {
     const QModelIndex current = m_table->currentIndex();
     if (current.isValid() && current.data(Qt::UserRole + 2).toBool()) {
-        const auto slash = m_prefix.find_last_of(L'/');
-        m_prefix = slash == std::wstring::npos ? std::wstring{} : m_prefix.substr(0, slash);
+        navigateUp();
+        return;
+    }
+    if (current.isValid() && current.data(Qt::UserRole + 5).toBool()) {
+        m_prefix = current.data(Qt::UserRole + 3).toString().toStdWString();
+        m_searchEdit->clear();
         fillModel();
+        statusBar()->showMessage(QString::fromStdWString(m_prefix));
         return;
     }
     const auto entry = selectedEntry();
     if (!entry) {
-        return;
-    }
-    if (entry->isDir) {
-        m_prefix = entry->path;
-        fillModel();
-        statusBar()->showMessage(QString::fromStdWString(m_prefix));
         return;
     }
     openSelected(false);
@@ -273,53 +373,92 @@ bool isImageFile(const QString& name) {
 }
 
 void MainWindow::updatePreview() {
-    if (m_previewStack == nullptr || m_job->isRunning()) {
-        return;
-    }
+    ++m_previewGeneration;
+    m_previewTimer->stop();
+    if (m_previewCancel) m_previewCancel->store(true);
+    m_previewHint->setText("选择文件可预览文本或图片");
+    m_previewStack->setCurrentIndex(0);
+    if (!m_previewButton->isChecked() || m_busy || m_job->isRunning()) return;
     const auto entry = selectedEntry();
-    if (!entry || entry->isDir || entry->size > 2 * 1024 * 1024) {
-        m_previewStack->setCurrentIndex(0);
-        return;
-    }
+    if (!entry || entry->isDir || entry->size > 2 * 1024 * 1024) return;
     const QString name = QString::fromStdWString(entry->name);
-    if (!isTextFile(name) && !isImageFile(name)) {
-        m_previewStack->setCurrentIndex(0);
-        return;
-    }
-    try {
-        const std::vector<std::uint8_t> bytes = m_service.readItem(m_path, entry->index, m_password, {});
-        const QByteArray data(reinterpret_cast<const char*>(bytes.data()), static_cast<int>(bytes.size()));
-        if (isImageFile(name)) {
-            QPixmap pixmap;
-            pixmap.loadFromData(data);
-            m_previewImage->setPixmap(pixmap.scaled(360, 360, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-            m_previewStack->setCurrentWidget(m_previewImage);
+    if (!isTextFile(name) && !isImageFile(name)) return;
+    m_previewHint->setText("正在加载预览…");
+    m_previewTimer->start(160);
+}
+
+void MainWindow::startPreview() {
+    if (m_previewThread != nullptr || !m_previewButton->isChecked() || m_busy || m_job->isRunning()) return;
+    const auto entry = selectedEntry();
+    if (!entry || entry->isDir || entry->size > 2 * 1024 * 1024) return;
+    const QString name = QString::fromStdWString(entry->name);
+    if (!isTextFile(name) && !isImageFile(name)) return;
+    const auto generation = m_previewGeneration;
+    const auto path = m_path;
+    const auto password = m_password;
+    const auto index = entry->index;
+    const auto dll = QDir(QCoreApplication::applicationDirPath()).filePath("7z.dll").toStdWString();
+    auto result = std::make_shared<QByteArray>();
+    auto success = std::make_shared<bool>(false);
+    auto cancel = std::make_shared<std::atomic_bool>(false);
+    m_previewCancel = cancel;
+    auto* thread = QThread::create([path, password, index, dll, result, success, cancel]() {
+        try {
+            zipdesk::ArchiveService service(dll);
+            zipdesk::OperationHooks hooks;
+            hooks.cancel = cancel.get();
+            const auto bytes = service.readItem(path, index, password, hooks);
+            *result = QByteArray(reinterpret_cast<const char*>(bytes.data()), static_cast<qsizetype>(bytes.size()));
+            *success = true;
+        } catch (const std::exception&) {
+        }
+    });
+    m_previewThread = thread;
+    connect(thread, &QThread::finished, this, [this, thread, result, success, generation, name]() {
+        m_previewThread = nullptr;
+        m_previewCancel.reset();
+        if (generation != m_previewGeneration) {
+            startPreview();
             return;
         }
-        m_previewText->setPlainText(QString::fromUtf8(data));
-        m_previewStack->setCurrentWidget(m_previewText);
-    } catch (const zipdesk::ArchiveError&) {
-        m_previewStack->setCurrentIndex(0);
-    }
+        if (!*success) {
+            m_previewHint->setText("无法预览此文件");
+            return;
+        }
+        if (isImageFile(name)) {
+            QPixmap pixmap;
+            if (pixmap.loadFromData(*result)) {
+                m_previewImage->setPixmap(pixmap.scaled(360, 360, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                m_previewStack->setCurrentWidget(m_previewImage);
+            } else {
+                m_previewHint->setText("无法预览此图片");
+            }
+        } else {
+            m_previewText->setPlainText(QString::fromUtf8(*result));
+            m_previewStack->setCurrentWidget(m_previewText);
+        }
+    });
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    thread->start();
 }
 
 void MainWindow::repairArchive() {
     if (m_path.empty()) {
         return;
     }
+    auto result = std::make_shared<zipdesk::ArchiveService::RepairResult>();
     begin(
-        "正在修复",
-        [this](const zipdesk::OperationHooks& hooks) {
-            const auto result = m_service.repair(m_path, m_password, hooks);
-            QMetaObject::invokeMethod(this, [this, result]() {
-                QMessageBox::information(this, "修复",
-                                         QString("已恢复 %1 个文件，失败 %2 个。\n%3")
-                                             .arg(result.recovered)
-                                             .arg(result.failed)
-                                             .arg(QString::fromStdWString(result.outputDir)));
-            });
+        "正在抢救可读取文件",
+        [this, result](const zipdesk::OperationHooks& hooks) {
+            *result = m_service.repair(m_path, m_password, hooks);
         },
-        []() {});
+        [this, result]() {
+            QMessageBox::information(this, "抢救可读取文件",
+                                     QString("已恢复 %1 个文件，失败 %2 个。\n%3")
+                                         .arg(result->recovered)
+                                         .arg(result->failed)
+                                         .arg(QString::fromStdWString(result->outputDir)));
+        });
 }
 
 void MainWindow::editSelected() {
@@ -370,18 +509,42 @@ void MainWindow::editSelected() {
             return;
         }
     }
-    const QString root = tempDirectory("edit");
+    const std::wstring archivePath = m_path;
+    const std::wstring password = m_password;
+    const QString root = tempDirectory("edit-" + QUuid::createUuid().toString(QUuid::Id128));
     const QString file = entryFile(root, *entry);
-    extractEntries({*entry}, root, [this, entry = *entry, file]() {
+    extractEntries({*entry}, root, [this, entry = *entry, file, archivePath, password]() {
         auto* process = new QProcess(this);
-        connect(process, &QProcess::finished, this, [this, process, entry, file]() {
+        connect(process, &QProcess::finished, this,
+                [this, process, entry, file, archivePath, password](int, QProcess::ExitStatus status) {
             process->deleteLater();
+            if (status != QProcess::NormalExit) {
+                QMessageBox::warning(this, "编辑", "外部编辑器异常结束，编辑文件保留在：\n" + file);
+                return;
+            }
+            if (m_job->isRunning()) {
+                QMessageBox::warning(this, "编辑", "当前仍在执行其他操作，无法自动保存。编辑文件保留在：\n" + file);
+                return;
+            }
             begin(
                 "正在保存修改",
-                [this, entry, file](const zipdesk::OperationHooks& hooks) {
-                    m_service.replaceItem(m_path, entry.index, file.toStdWString(), m_password, hooks);
+                [this, entry, file, archivePath, password](const zipdesk::OperationHooks& hooks) {
+                    const auto info = m_service.read(archivePath, password, hooks);
+                    const auto found = std::find_if(info.entries.begin(), info.entries.end(),
+                        [index = entry.index](const auto& item) { return item.index == index; });
+                    if (found == info.entries.end() || found->path != entry.path) {
+                        throw zipdesk::ArchiveError(zipdesk::ErrorKind::Other,
+                            L"原压缩包的条目已变化，未回写。编辑文件仍保留在临时目录。");
+                    }
+                    m_service.replaceItem(archivePath, entry.index, file.toStdWString(), password, hooks);
                 },
-                [this]() { reloadArchive(); });
+                [this, archivePath]() {
+                    if (m_path == archivePath) {
+                        reloadArchive();
+                    } else {
+                        statusBar()->showMessage("已保存修改到原压缩包：" + QString::fromStdWString(archivePath));
+                    }
+                });
         });
         process->start("notepad.exe", {file});
     });
@@ -421,6 +584,7 @@ void MainWindow::copySelectedToClipboard() {
         selected.push_back(entry.index);
     }
     const std::vector<std::uint32_t> expanded = zipdesk::expandSelection(m_entries, selected);
+    const QStringList selectedPaths = selectedTopLevelPaths();
     std::vector<zipdesk::ArchiveEntry> toExtract;
     for (const std::uint32_t index : expanded) {
         for (const zipdesk::ArchiveEntry& entry : m_entries) {
@@ -435,23 +599,11 @@ void MainWindow::copySelectedToClipboard() {
     }
     const QString directory = tempDirectory("clip-" + QUuid::createUuid().toString(QUuid::Id128));
     m_clipboardDir = directory;
-    extractEntries(toExtract, directory, [this, entries, directory]() {
+    extractEntries(toExtract, directory, [this, selectedPaths, directory]() {
         QList<QUrl> urls;
-        for (const zipdesk::ArchiveEntry& entry : entries) {
-            bool covered = false;
-            for (const zipdesk::ArchiveEntry& other : entries) {
-                if (!other.isDir || other.index == entry.index) {
-                    continue;
-                }
-                const std::wstring prefix = !other.path.empty() && other.path.back() == L'/' ? other.path : other.path + L'/';
-                if (entry.path.rfind(prefix, 0) == 0) {
-                    covered = true;
-                    break;
-                }
-            }
-            if (!covered) {
-                urls.push_back(QUrl::fromLocalFile(entryFile(directory, entry)));
-            }
+        for (const QString& relative : selectedPaths) {
+            const QString path = QDir(directory).filePath(relative);
+            if (QFileInfo::exists(path)) urls.push_back(QUrl::fromLocalFile(path));
         }
         auto* mime = new QMimeData;
         mime->setUrls(urls);
@@ -463,7 +615,7 @@ void MainWindow::copySelectedToClipboard() {
 void MainWindow::copySelectedTo() {
     const auto entries = selectedEntries();
     if (entries.empty()) {
-        QMessageBox::information(this, "日常解压", "请先选择文件。");
+        QMessageBox::information(this, "青匣", "请先选择文件。");
         return;
     }
     const QString directory = QFileDialog::getExistingDirectory(this, "复制到");
@@ -472,13 +624,13 @@ void MainWindow::copySelectedTo() {
     }
     extractEntries(entries, directory, [this, directory]() {
         statusBar()->showMessage("已复制到 " + directory);
-    });
+    }, true);
 }
 
 void MainWindow::moveSelectedTo() {
     const auto entries = selectedEntries();
     if (entries.empty()) {
-        QMessageBox::information(this, "日常解压", "请先选择文件。");
+        QMessageBox::information(this, "青匣", "请先选择文件。");
         return;
     }
     const QString directory = QFileDialog::getExistingDirectory(this, "移动到");
@@ -499,7 +651,7 @@ void MainWindow::moveSelectedTo() {
                 statusBar()->showMessage("已移动到 " + directory);
                 reloadArchive();
             });
-    });
+    }, true, false);
 }
 
 void MainWindow::deleteSelected() {
@@ -659,7 +811,11 @@ void MainWindow::splitSelected() {
     const QString root = tempDirectory("split");
     const QString file = entryFile(root, *entry);
     extractEntries({*entry}, root, [this, file, directory, megabytes]() {
-        splitFile(file, directory, static_cast<qint64>(megabytes) * 1024 * 1024);
+        const QString error = splitFile(file, directory, static_cast<qint64>(megabytes) * 1024 * 1024);
+        if (!error.isEmpty()) {
+            QMessageBox::warning(this, "分割文件", error);
+            return;
+        }
         QMessageBox::information(this, "分割文件", "已分割到\n" + directory);
     });
 }
@@ -673,17 +829,50 @@ void MainWindow::mergeFiles() {
     if (output.isEmpty()) {
         return;
     }
-    QFile target(output);
+    const QString outputPath = QDir::cleanPath(QFileInfo(output).absoluteFilePath());
+    for (const QString& part : parts) {
+        if (QDir::cleanPath(QFileInfo(part).absoluteFilePath()).compare(outputPath, Qt::CaseInsensitive) == 0) {
+            QMessageBox::warning(this, "合并文件", "输出文件不能是选中的分片。");
+            return;
+        }
+    }
+    QSaveFile target(output);
     if (!target.open(QIODevice::WriteOnly)) {
-        QMessageBox::warning(this, "合并文件", "无法写入目标文件。");
+        QMessageBox::warning(this, "合并文件", "无法写入目标文件：" + target.errorString());
         return;
     }
     for (const QString& part : parts) {
         QFile input(part);
         if (!input.open(QIODevice::ReadOnly)) {
-            continue;
+            target.cancelWriting();
+            QMessageBox::warning(this, "合并文件", "无法读取分片 " + part + "：" + input.errorString());
+            return;
         }
-        target.write(input.readAll());
+        while (!input.atEnd()) {
+            const QByteArray bytes = input.read(1024 * 1024);
+            if (bytes.isEmpty()) {
+                if (input.error() != QFileDevice::NoError) {
+                    target.cancelWriting();
+                    QMessageBox::warning(this, "合并文件", "读取分片失败 " + part + "：" + input.errorString());
+                    return;
+                }
+                break;
+            }
+            if (!writeFully(target, bytes)) {
+                target.cancelWriting();
+                QMessageBox::warning(this, "合并文件", "写入目标文件失败：" + target.errorString());
+                return;
+            }
+        }
+        if (input.error() != QFileDevice::NoError) {
+            target.cancelWriting();
+            QMessageBox::warning(this, "合并文件", "读取分片失败 " + part + "：" + input.errorString());
+            return;
+        }
+    }
+    if (!target.commit()) {
+        QMessageBox::warning(this, "合并文件", "保存合并文件失败：" + target.errorString());
+        return;
     }
     QMessageBox::information(this, "合并文件", "已合并为\n" + output);
 }

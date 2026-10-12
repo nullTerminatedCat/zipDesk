@@ -379,8 +379,8 @@ void writeCommandMenu(const std::wstring& menuClass,
 
 void installCascade(const std::wstring& menuKey, const std::wstring& menuClass, const std::wstring& icon) {
     deleteTree(menuKey);
-    setDefault(menuKey, L"日常解压");
-    setString(menuKey, L"MUIVerb", L"日常解压");
+    setDefault(menuKey, L"青匣");
+    setString(menuKey, L"MUIVerb", L"青匣");
     setString(menuKey, L"Icon", icon);
     setString(menuKey, L"ExtendedSubCommandsKey", menuClass);
 }
@@ -391,6 +391,7 @@ void installShellIntegration(const std::wstring& exePathRaw) {
     const std::wstring open = quotedCommand(exePath, L"\"%1\"");
     const std::wstring extractHere = quotedCommand(exePath, L"--extract-here \"%1\"");
     const std::wstring extractFolder = quotedCommand(exePath, L"--extract-to-folder \"%1\"");
+    const std::wstring extractSmart = quotedCommand(exePath, L"--extract-smart \"%1\"");
     const std::wstring compressZip = quotedCommand(exePath, L"--compress-zip \"%1\"");
     const std::wstring compress7z = quotedCommand(exePath, L"--compress-7z \"%1\"");
 
@@ -406,7 +407,7 @@ void installShellIntegration(const std::wstring& exePathRaw) {
         setDefault(std::wstring(L"Software\\Classes\\") + extension, progId);
         setDefault(classRoot, descriptions[index]);
         setDefault(classRoot + L"\\DefaultIcon", icon);
-        setDefault(classRoot + L"\\shell\\open", L"用日常解压打开");
+        setDefault(classRoot + L"\\shell\\open", L"用青匣打开");
         setString(classRoot + L"\\shell\\open", L"Icon", icon);
         setDefault(classRoot + L"\\shell\\open\\command", open);
 
@@ -422,8 +423,10 @@ void installShellIntegration(const std::wstring& exePathRaw) {
     }
 
     writeCommandMenu(L"ZipDesk.ExtractMenu",
-                     {{L"a_here", {L"解压到当前目录", extractHere}},
-                      {L"b_folder", {L"解压到同名文件夹", extractFolder}}});
+                     {{L"a_open", {L"打开当前压缩包", open}},
+                      {L"b_here", {L"解压到当前目录", extractHere}},
+                      {L"c_folder", {L"解压到同名文件夹", extractFolder}},
+                      {L"d_smart", {L"智能解压", extractSmart}}});
     writeCommandMenu(L"ZipDesk.CompressMenu",
                      {{L"a_zip", {L"压缩为 zip", compressZip}}, {L"b_7z", {L"压缩为 7z", compress7z}}});
     installCascade(L"Software\\Classes\\*\\shell\\ZipDesk", L"ZipDesk.CompressMenu", icon);

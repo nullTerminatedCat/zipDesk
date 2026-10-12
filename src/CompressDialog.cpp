@@ -4,8 +4,13 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QDragEnterEvent>
+#include <QDragLeaveEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QMimeData>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -13,41 +18,15 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QToolButton>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 namespace {
 
 QString extensionFor(zipdesk::ArchiveFormat format) {
     return format == zipdesk::ArchiveFormat::Zip ? ".zip" : ".7z";
-}
-
-QString parentDirectoryName(const QString& input) {
-    const QFileInfo info(input);
-    if (info.isDir()) {
-        const QString parentPath = info.absolutePath();
-        const QString parentName = QFileInfo(parentPath).fileName();
-        if (!parentName.isEmpty()) {
-            return parentName;
-        }
-        return info.fileName();
-    }
-    const QString parentName = QFileInfo(info.absolutePath()).fileName();
-    if (!parentName.isEmpty()) {
-        return parentName;
-    }
-    return info.completeBaseName();
-}
-
-QString parentDirectoryPath(const QString& input) {
-    const QFileInfo info(input);
-    if (info.isDir()) {
-        const QString parentPath = info.absolutePath();
-        if (QFileInfo(parentPath).fileName().isEmpty()) {
-            return parentPath;
-        }
-        return parentPath;
-    }
-    return info.absolutePath();
 }
 
 }  // namespace
@@ -56,13 +35,16 @@ QString defaultArchivePath(const QStringList& inputs, const QString& extension) 
     if (inputs.isEmpty()) {
         return {};
     }
-    const QString input = inputs.front();
-    const QFileInfo info(input);
-    QString directory = parentDirectoryPath(input);
-    QString name = parentDirectoryName(input);
-    if (info.isDir() && QFileInfo(info.absolutePath()).fileName().isEmpty()) {
-        directory = info.absolutePath();
-        name = info.fileName();
+    const QFileInfo first(inputs.front());
+    const QString directory = first.absolutePath();
+    QString name;
+    if (inputs.size() == 1) {
+        name = first.isDir() ? first.fileName() : first.completeBaseName();
+    } else {
+        const bool sameDirectory = std::all_of(inputs.cbegin(), inputs.cend(), [&directory](const QString& input) {
+            return QFileInfo(input).absolutePath().compare(directory, Qt::CaseInsensitive) == 0;
+        });
+        name = sameDirectory ? QFileInfo(directory).fileName() : QStringLiteral("新建压缩");
     }
     if (name.isEmpty()) {
         name = QStringLiteral("新建压缩");
@@ -86,9 +68,32 @@ bool isZipPassword(const QString& password) {
 CompressDialog::CompressDialog(QWidget* parent)
     : QDialog(parent) {
     setWindowTitle("新建压缩");
-    setMinimumWidth(520);
+    setMinimumWidth(560);
+    setStyleSheet(
+        "QDialog { background: #f4f8f7; color: #203b37; }"
+        "QLabel#dialogTitle { color: #193b35; font-size: 19px; font-weight: 700; }"
+        "QLabel#dialogHint { color: #70847d; font-size: 11px; }"
+        "QLabel#sectionTitle { color: #35534d; font-weight: 600; }"
+        "QListWidget { background: #ffffff; color: #294b45; border: 1px solid #d9e6e1; border-radius: 10px; padding: 5px; alternate-background-color: #f8fbfa; }"
+        "QListWidget#fileList[dragOver=\"true\"] { border: 2px dashed #167468; background: #f3fbf8; }"
+        "QListWidget::item { padding: 4px; }"
+        "QListWidget::item:selected { background: #ddf2eb; color: #193b35; }"
+        "QLineEdit, QComboBox { background: #ffffff; color: #294b45; border: 1px solid #d9e6e1; border-radius: 8px; padding: 7px 9px; min-height: 18px; }"
+        "QLineEdit:focus, QComboBox:focus { border-color: #4aa18f; }"
+        "QPushButton { background: #ffffff; color: #294b45; border: 1px solid #d9e6e1; border-radius: 8px; padding: 7px 13px; }"
+        "QPushButton:hover { background: #f6fbf9; border-color: #8abbb0; }"
+        "QPushButton#primaryButton { background: #167468; color: white; border-color: #167468; font-weight: 600; }"
+        "QPushButton#primaryButton:hover { background: #0e6258; border-color: #0e6258; }"
+        "QToolButton#advancedToggle { color: #167468; background: transparent; border: none; padding: 5px 0; font-weight: 600; }"
+        "QCheckBox { color: #35534d; spacing: 7px; }");
 
+    setAcceptDrops(true);
     m_files = new QListWidget(this);
+    m_files->setObjectName("fileList");
+    m_files->setAcceptDrops(false);
+    m_files->setMinimumHeight(136);
+    m_files->setAlternatingRowColors(true);
+    m_files->setSelectionMode(QAbstractItemView::ExtendedSelection);
     auto* addFileButton = new QPushButton("添加文件", this);
     auto* addFolderButton = new QPushButton("添加文件夹", this);
     auto* removeButton = new QPushButton("移除", this);
@@ -97,8 +102,11 @@ CompressDialog::CompressDialog(QWidget* parent)
     fileButtons->addWidget(addFolderButton);
     fileButtons->addWidget(removeButton);
     fileButtons->addStretch();
+    m_fileCount = new QLabel("0 项", this);
+    fileButtons->addWidget(m_fileCount);
 
     m_format = new QComboBox(this);
+    m_format->setObjectName("archiveFormat");
     m_format->addItem("zip", static_cast<int>(zipdesk::ArchiveFormat::Zip));
     m_format->addItem("7z", static_cast<int>(zipdesk::ArchiveFormat::SevenZip));
 
@@ -116,6 +124,7 @@ CompressDialog::CompressDialog(QWidget* parent)
     m_volume->addItem("700 MB", static_cast<qulonglong>(700ull * 1024 * 1024));
     m_solid = new QCheckBox("固实压缩（仅 7z）", this);
     m_sfx = new QCheckBox("创建自解压 exe（仅 7z）", this);
+    m_sfx->setObjectName("selfExtracting");
     m_solid->setEnabled(false);
     m_sfx->setEnabled(false);
 
@@ -126,34 +135,70 @@ CompressDialog::CompressDialog(QWidget* parent)
     m_confirm->setEchoMode(QLineEdit::Password);
 
     m_output = new QLineEdit(this);
-    m_output->setReadOnly(true);
+    m_output->setObjectName("outputPath");
+    m_output->setPlaceholderText("选择保存位置和文件名");
+    auto* browseButton = new QPushButton("浏览…", this);
     auto* outputRow = new QHBoxLayout;
     outputRow->addWidget(m_output, 1);
+    outputRow->addWidget(browseButton);
 
     auto* form = new QFormLayout;
+    form->setVerticalSpacing(9);
+    form->setHorizontalSpacing(14);
     form->addRow("格式", m_format);
     form->addRow("压缩级别", m_level);
-    form->addRow("分卷", m_volume);
-    form->addRow("", m_solid);
-    form->addRow("", m_sfx);
     form->addRow("密码", m_password);
     form->addRow("确认密码", m_confirm);
     form->addRow("将保存为", outputRow);
 
+    auto* advancedButton = new QToolButton(this);
+    advancedButton->setObjectName("advancedToggle");
+    advancedButton->setText("高级选项");
+    advancedButton->setCheckable(true);
+    advancedButton->setArrowType(Qt::RightArrow);
+    advancedButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    auto* advancedPanel = new QWidget(this);
+    auto* advancedLayout = new QFormLayout(advancedPanel);
+    advancedLayout->setContentsMargins(0, 0, 0, 0);
+    advancedLayout->addRow("分卷", m_volume);
+    advancedLayout->addRow("", m_solid);
+    advancedLayout->addRow("", m_sfx);
+    advancedPanel->hide();
+
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     buttons->button(QDialogButtonBox::Ok)->setText("压缩");
+    buttons->button(QDialogButtonBox::Ok)->setObjectName("primaryButton");
     buttons->button(QDialogButtonBox::Cancel)->setText("取消");
 
     auto* layout = new QVBoxLayout(this);
-    layout->addWidget(new QLabel("要压缩的文件和文件夹", this));
+    layout->setContentsMargins(24, 22, 24, 22);
+    layout->setSpacing(11);
+    auto* title = new QLabel("创建压缩包", this);
+    title->setObjectName("dialogTitle");
+    auto* hint = new QLabel("将文件或文件夹拖到列表中，也可以点击「添加文件」。", this);
+    hint->setObjectName("dialogHint");
+    auto* section = new QLabel("文件与文件夹", this);
+    section->setObjectName("sectionTitle");
+    layout->addWidget(title);
+    layout->addWidget(hint);
+    layout->addSpacing(6);
+    layout->addWidget(section);
     layout->addWidget(m_files, 1);
     layout->addLayout(fileButtons);
     layout->addLayout(form);
+    layout->addWidget(advancedButton);
+    layout->addWidget(advancedPanel);
     layout->addWidget(buttons);
 
     connect(addFileButton, &QPushButton::clicked, this, &CompressDialog::addFiles);
     connect(addFolderButton, &QPushButton::clicked, this, &CompressDialog::addFolder);
     connect(removeButton, &QPushButton::clicked, this, &CompressDialog::removeSelected);
+    connect(browseButton, &QPushButton::clicked, this, &CompressDialog::chooseOutput);
+    connect(m_output, &QLineEdit::textEdited, this, [this]() { m_outputCustomized = true; });
+    connect(advancedButton, &QToolButton::toggled, this, [advancedButton, advancedPanel](bool expanded) {
+        advancedButton->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+        advancedPanel->setVisible(expanded);
+    });
     connect(m_format, &QComboBox::currentIndexChanged, this, &CompressDialog::updateFormatOptions);
     connect(m_sfx, &QCheckBox::toggled, this, &CompressDialog::refreshOutput);
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
@@ -162,6 +207,7 @@ CompressDialog::CompressDialog(QWidget* parent)
 
 void CompressDialog::setRequest(const zipdesk::CompressRequest& request) {
     m_files->clear();
+    m_outputCustomized = !request.outputPath.empty();
     for (const std::wstring& input : request.inputs) {
         m_files->addItem(QString::fromStdWString(input));
     }
@@ -175,7 +221,14 @@ void CompressDialog::setRequest(const zipdesk::CompressRequest& request) {
     }
     m_password->setText(QString::fromStdWString(request.password));
     m_confirm->setText(m_password->text());
+    m_volume->setCurrentIndex(std::max(0, m_volume->findData(static_cast<qulonglong>(request.volumeSize))));
+    m_solid->setChecked(request.solid);
+    m_sfx->setChecked(request.sfx);
+    if (m_outputCustomized) {
+        m_output->setText(QString::fromStdWString(request.outputPath));
+    }
     refreshOutput();
+    updateFileCount();
 }
 
 zipdesk::CompressRequest CompressDialog::request() const {
@@ -193,25 +246,109 @@ zipdesk::CompressRequest CompressDialog::request() const {
     return result;
 }
 
+void CompressDialog::setDragHighlight(bool active) {
+    m_files->setProperty("dragOver", active);
+    m_files->style()->unpolish(m_files);
+    m_files->style()->polish(m_files);
+}
+
+void CompressDialog::addPaths(const QStringList& paths) {
+    for (const QString& path : paths) {
+        const QString local = QFileInfo(path).absoluteFilePath();
+        if (local.isEmpty() || !QFileInfo::exists(local)) {
+            continue;
+        }
+        if (m_files->findItems(local, Qt::MatchExactly).isEmpty()) {
+            m_files->addItem(local);
+        }
+    }
+    refreshOutput();
+    updateFileCount();
+}
+
+void CompressDialog::dragEnterEvent(QDragEnterEvent* event) {
+    if (event->mimeData()->hasUrls()) {
+        event->acceptProposedAction();
+        setDragHighlight(true);
+        return;
+    }
+    QDialog::dragEnterEvent(event);
+}
+
+void CompressDialog::dragMoveEvent(QDragMoveEvent* event) {
+    if (event->mimeData()->hasUrls()) {
+        event->acceptProposedAction();
+        return;
+    }
+    QDialog::dragMoveEvent(event);
+}
+
+void CompressDialog::dragLeaveEvent(QDragLeaveEvent* event) {
+    setDragHighlight(false);
+    QDialog::dragLeaveEvent(event);
+}
+
+void CompressDialog::dropEvent(QDropEvent* event) {
+    setDragHighlight(false);
+    QStringList paths;
+    for (const QUrl& url : event->mimeData()->urls()) {
+        if (url.isLocalFile()) {
+            paths.push_back(url.toLocalFile());
+        }
+    }
+    if (paths.isEmpty()) {
+        QDialog::dropEvent(event);
+        return;
+    }
+    addPaths(paths);
+    event->acceptProposedAction();
+}
+
 void CompressDialog::addFiles() {
     const QStringList files = QFileDialog::getOpenFileNames(this, "添加文件");
     for (const QString& file : files) {
-        m_files->addItem(file);
+        if (m_files->findItems(file, Qt::MatchExactly).isEmpty()) {
+            m_files->addItem(file);
+        }
     }
     refreshOutput();
+    updateFileCount();
 }
 
 void CompressDialog::addFolder() {
     const QString folder = QFileDialog::getExistingDirectory(this, "添加文件夹");
     if (!folder.isEmpty()) {
-        m_files->addItem(folder);
+        if (m_files->findItems(folder, Qt::MatchExactly).isEmpty()) {
+            m_files->addItem(folder);
+        }
     }
     refreshOutput();
+    updateFileCount();
 }
 
 void CompressDialog::removeSelected() {
     qDeleteAll(m_files->selectedItems());
     refreshOutput();
+    updateFileCount();
+}
+
+void CompressDialog::chooseOutput() {
+    const auto format = static_cast<zipdesk::ArchiveFormat>(m_format->currentData().toInt());
+    const QString extension = m_sfx->isChecked() ? QStringLiteral(".exe") : extensionFor(format);
+    const QString suggested = m_output->text().isEmpty()
+        ? QDir(QDir::homePath()).filePath(QStringLiteral("新建压缩") + extension)
+        : m_output->text();
+    const QString path = QFileDialog::getSaveFileName(this, "保存压缩包", suggested,
+        QString("%1 文件 (*%1)").arg(extension));
+    if (!path.isEmpty()) {
+        m_outputCustomized = true;
+        m_output->setText(path);
+        refreshOutput();
+    }
+}
+
+void CompressDialog::updateFileCount() {
+    m_fileCount->setText(QString("%1 项").arg(m_files->count()));
 }
 
 void CompressDialog::refreshOutput() {
@@ -221,7 +358,18 @@ void CompressDialog::refreshOutput() {
     }
     const auto format = static_cast<zipdesk::ArchiveFormat>(m_format->currentData().toInt());
     const QString extension = m_sfx->isChecked() ? QStringLiteral(".exe") : extensionFor(format);
-    m_output->setText(defaultArchivePath(inputs, extension));
+    if (!m_outputCustomized || m_output->text().isEmpty()) {
+        m_output->setText(defaultArchivePath(inputs, extension));
+        return;
+    }
+    QString path = m_output->text().trimmed();
+    for (const QString& oldExtension : {QStringLiteral(".zip"), QStringLiteral(".7z"), QStringLiteral(".exe")}) {
+        if (path.endsWith(oldExtension, Qt::CaseInsensitive)) {
+            path.chop(oldExtension.size());
+            break;
+        }
+    }
+    m_output->setText(path + extension);
 }
 
 void CompressDialog::updateFormatOptions() {
@@ -240,7 +388,6 @@ void CompressDialog::accept() {
         QMessageBox::warning(this, "新建压缩", "请先添加文件或文件夹。");
         return;
     }
-    refreshOutput();
     if (m_output->text().trimmed().isEmpty()) {
         QMessageBox::warning(this, "新建压缩", "无法确定保存位置。");
         return;
@@ -255,8 +402,18 @@ void CompressDialog::accept() {
         return;
     }
     QString path = m_output->text().trimmed();
-    const QString extension = extensionFor(format);
+    if (QFileInfo(path).fileName().isEmpty()) {
+        QMessageBox::warning(this, "新建压缩", "请填写压缩包文件名。");
+        return;
+    }
+    const QString extension = m_sfx->isChecked() ? QStringLiteral(".exe") : extensionFor(format);
     if (!path.endsWith(extension, Qt::CaseInsensitive)) {
+        for (const QString& oldExtension : {QStringLiteral(".zip"), QStringLiteral(".7z"), QStringLiteral(".exe")}) {
+            if (path.endsWith(oldExtension, Qt::CaseInsensitive)) {
+                path.chop(oldExtension.size());
+                break;
+            }
+        }
         path += extension;
         m_output->setText(path);
     }

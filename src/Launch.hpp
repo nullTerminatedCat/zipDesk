@@ -10,6 +10,7 @@ enum class LaunchAction {
     Open,
     ExtractHere,
     ExtractToFolder,
+    SmartExtract,
     CompressZip,
     Compress7z,
     Register,
