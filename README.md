@@ -2,7 +2,7 @@
 
 一个面向 Windows 的轻量压缩文件管理器。打开压缩包、查看内容、按需解压，也可以通过拖放或资源管理器右键菜单创建压缩包。
 
-> 当前为 **0.1.0 开发版本**。仓库尚未提供正式 Release 安装包；功能和界面仍在完善。
+> 当前为 **0.1.0 预览版本**。可从 [GitHub Releases](https://github.com/huanglin2/zipDesk/releases/tag/v0.1.0) 下载 Windows x64 安装包或免安装 ZIP；功能和界面仍在完善。
 
 ![青匣主页](docs/screenshots/home.png)
 
@@ -27,7 +27,9 @@
 
 ## 获取与使用
 
-目前请按下文从源码构建。启动 `ZipDesk.exe` 后，可以拖入 ZIP、7z、RAR 查看内容，或拖入普通文件和文件夹创建压缩包。打开压缩包后，工具栏提供解压、添加和完整性测试等操作。
+在 [Release 页面](https://github.com/huanglin2/zipDesk/releases/tag/v0.1.0) 下载 `setup.exe` 安装包，或完整解压 `portable.zip` 后运行 `ZipDesk.exe`。两种包均包含 Qt、7-Zip 和 Visual C++ 运行库，另附 SHA-256 校验文件。程序未做代码签名。
+
+启动后，可以拖入 ZIP、7z、RAR 查看内容，或拖入普通文件和文件夹创建压缩包。打开压缩包后，工具栏提供解压、添加和完整性测试等操作。也可以按下文从源码构建。
 
 程序设置中可以启用资源管理器文件关联与右键菜单；安装器也提供此选项。该设置写入当前用户的 Windows 配置，不需要系统级安装。
 
@@ -81,13 +83,13 @@ ctest --test-dir build --output-on-failure
 
 ### 制作安装包
 
-安装 [Inno Setup](https://jrsoftware.org/isinfo.php) 后，在完成上述构建的前提下运行：
+安装 [Inno Setup](https://jrsoftware.org/isinfo.php) 后，在完成上述构建的前提下运行 PowerShell 打包脚本，将路径改成自己的安装位置：
 
-```bat
-ISCC installer\ZipDesk.iss
+```powershell
+.\scripts\package.ps1 -RuntimeDirectory "C:\Path\To\VC\Redist\MSVC\14.xx\x64\Microsoft.VC143.CRT" -Iscc "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 ```
 
-脚本从 `build` 目录收集程序、7-Zip 和 Qt 运行文件，在 `dist` 目录生成安装包。打包前请检查构建产物及第三方运行库是否齐全。
+脚本按白名单收集程序及运行库，加入第三方许可和源提交信息，在 `dist` 生成安装包、免安装 ZIP 和 `SHA256SUMS.txt`。测试程序、构建缓存和本地日志不进入发布包。
 
 ## 命令行
 
@@ -121,4 +123,4 @@ build\ZipDesk.exe a result.7z file1.txt folder
 
 欢迎通过 Issue 报告可复现的问题，或通过 Pull Request 提交改进。提交前请运行相关冒烟测试，并说明改动涉及的使用场景。
 
-**仓库目前尚未附带 `LICENSE`。** 正式开放代码复用和发布二进制安装包前，需要确定项目许可证，并整理 Qt、7-Zip、bit7z 等第三方组件的许可与声明。
+**项目自身尚未选择开源许可证。** 第三方组件的许可和源码地址见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，对应许可文本随二进制包分发。
