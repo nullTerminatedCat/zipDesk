@@ -1,4 +1,5 @@
 #include "ArchiveService.hpp"
+#include "ArchiveJob.hpp"
 #include "Launch.hpp"
 #include "MainWindow.hpp"
 
@@ -14,6 +15,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileDialog>
 #include <QFrame>
 #include <QItemSelectionModel>
 #include <QListWidget>
@@ -194,9 +196,123 @@ bool testExtractResult(QApplication& app, const QString& root, const QString& sc
     std::cout << (valid ? "EXTRACT UI OK: " : "FAIL: extract UI ") << scenario.toStdString() << "\n";
     return valid;
 }
+bool testMoveResult(QApplication& app, const QString& root, const QString& mode) {
+    app.setQuitOnLastWindowClosed(false);
+    zipdesk::ArchiveService service(
+        QDir(QCoreApplication::applicationDirPath()).filePath("7z.dll").toStdWString());
+    const auto write = [](const QString& path, const QByteArray& bytes) {
+        QFile file(path);
+        return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
+    };
+    const auto read = [](const QString& path) {
+        QFile file(path);
+        return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+    };
+    const QString source = QDir(root).filePath("sample.txt");
+    const QString keep = QDir(root).filePath("keep.txt");
+    const QString output = QDir(root).filePath("output");
+    const QString target = QDir(output).filePath("sample.txt");
+    if (!write(source, "sample") || !write(keep, "keep") || !QDir().mkpath(output)) return false;
+    if (mode == "failure") {
+        if (!QDir().mkpath(target) || !write(QDir(target).filePath("blocker"), "keep")) return false;
+    } else if (!write(target, "old")) return false;
+    zipdesk::CompressRequest request;
+    request.inputs = {source.toStdWString(), keep.toStdWString()};
+    request.outputPath = QDir(root).filePath("sample.zip").toStdWString();
+    service.compress(request, {});
+    const QByteArray original = read(QString::fromStdWString(request.outputPath));
+    zipdesk::LaunchCommand launch;
+    launch.action = zipdesk::LaunchAction::Open;
+    launch.paths = {request.outputPath};
+    MainWindow window(service, launch);
+    auto* table = window.findChild<QTableView*>();
+    auto* job = window.findChild<ArchiveJob*>();
+    bool started = false, confirmed = false, conflict = false, result = false, valid = true;
+    QElapsedTimer elapsed;
+    elapsed.start();
+    QTimer dialogs;
+    dialogs.setInterval(20);
+    QObject::connect(&dialogs, &QTimer::timeout, &window, [&]() {
+        if (elapsed.elapsed() > 12000) {
+            valid = false;
+            if (auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget())) modal->reject();
+            if (job->isRunning()) job->requestCancel();
+            else app.exit(1);
+            return;
+        }
+        if (auto* picker = qobject_cast<QFileDialog*>(QApplication::activeModalWidget())) {
+            picker->setDirectory(output);
+            picker->selectFile(output);
+            QMetaObject::invokeMethod(picker, "accept", Qt::DirectConnection);
+            return;
+        }
+        if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+            if (box->windowTitle() == "移动所选项目") {
+                confirmed = true;
+                valid = valid && box->text().contains("从压缩包中移除") &&
+                    box->defaultButton() == box->button(QMessageBox::No);
+                box->button(mode == "decline" ? QMessageBox::No : QMessageBox::Yes)->click();
+                if (mode == "decline") QTimer::singleShot(0, &app, &QCoreApplication::quit);
+            } else if (box->windowTitle() == "同名文件") {
+                conflict = true;
+                for (auto* button : box->buttons())
+                    valid = valid && button->text() != "全部跳过";
+                const QString choice = mode == "cancel" ? "取消" : "全部覆盖";
+                for (auto* button : box->buttons()) {
+                    if (button->text() == choice) {
+                        button->click();
+                        if (mode == "cancel") QTimer::singleShot(0, &app, &QCoreApplication::quit);
+                        break;
+                    }
+                }
+            } else {
+                result = true;
+                if (box->windowTitle() != (mode == "failure" ? "移动未完成" : "移动完成") ||
+                    !box->text().contains(QDir::toNativeSeparators(output)))
+                    std::cerr << "Unexpected move dialog: " << box->windowTitle().toStdString()
+                              << " / " << box->text().toStdString() << "\n";
+                valid = valid && box->windowTitle() == (mode == "failure" ? "移动未完成" : "移动完成")
+                    && box->text().contains(QDir::toNativeSeparators(output));
+                box->accept();
+            }
+            return;
+        }
+        if (result && !job->isRunning()) {
+            app.quit();
+        } else if (!started && table && table->model()->rowCount() == 2 && !job->isRunning()) {
+            for (int row = 0; row < table->model()->rowCount(); ++row)
+                if (table->model()->index(row, 0).data().toString() == "sample.txt") table->selectRow(row);
+            for (auto* action : window.findChildren<QAction*>()) {
+                if (action->property("i18n").toString() == "移动所选到…") {
+                    started = true;
+                    QTimer::singleShot(0, action, &QAction::trigger);
+                    break;
+                }
+            }
+        }
+    });
+    dialogs.start();
+    const int code = app.exec();
+    dialogs.stop();
+    valid = valid && code == 0 && started && confirmed && conflict == (mode != "decline")
+        && result == (mode == "overwrite" || mode == "failure");
+    if (mode == "overwrite") {
+        const auto info = service.read(request.outputPath, L"", {});
+        valid = valid && info.entries.size() == 1 && info.entries.front().path == L"keep.txt"
+            && read(target) == "sample" && table->model()->rowCount() == 1;
+    } else {
+        valid = valid && read(QString::fromStdWString(request.outputPath)) == original;
+        if (mode != "failure") valid = valid && read(target) == "old";
+    }
+    if (!valid) std::cerr << "move states: started=" << started << " confirmed=" << confirmed
+                         << " conflict=" << conflict << " result=" << result << " code=" << code << "\n";
+    std::cout << (valid ? "MOVE UI OK: " : "FAIL: move UI ") << mode.toStdString() << "\n";
+    return valid;
+}
 }  // namespace
 
 int main(int argc, char* argv[]) {
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
     QApplication app(argc, argv);
     app.setApplicationName("ZipDeskUiSmoke");
     app.setOrganizationName("ZipDeskUiSmoke");
@@ -208,6 +324,8 @@ int main(int argc, char* argv[]) {
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, temporary.path());
     QSettings().setValue("ui/previewVisible", false);
+    if (app.arguments().size() == 3 && app.arguments().at(1) == "--move")
+        return testMoveResult(app, temporary.path(), app.arguments().at(2)) ? 0 : 1;
     if (app.arguments().size() == 3 && app.arguments().at(1) == "--extract")
         return testExtractResult(app, temporary.path(), app.arguments().at(2)) ? 0 : 1;
 

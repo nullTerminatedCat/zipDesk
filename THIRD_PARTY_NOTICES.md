@@ -9,6 +9,6 @@ QingXia 0.1.0 Windows x64 binaries include these components. Their licenses appl
 | bit7z | 4.0.12 | MPL 2.0, see `licenses/bit7z-MPL-2.0.txt`. Unmodified source: https://github.com/rikyoz/bit7z/tree/v4.0.12 |
 | Microsoft Visual C++ runtime and DirectX runtime/compiler libraries | Files deployed by Visual Studio / Qt | Microsoft redistributable components, subject to their respective Microsoft terms. |
 
-Qt is dynamically linked; its DLLs remain separate in the application directory. The application's source and build instructions are available at https://github.com/huanglin2/zipDesk. No restriction is imposed here on reverse engineering for debugging modifications to LGPL-covered libraries.
+Qt is dynamically linked; its DLLs remain separate in the application directory. The application's source and build instructions are available at https://github.com/nullTerminatedCat/zipDesk. No restriction is imposed here on reverse engineering for debugging modifications to LGPL-covered libraries.
 
 In the source repository, license texts are stored under `docs/licenses/`; distributed packages put them under `licenses/`.

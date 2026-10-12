@@ -3,6 +3,7 @@
 #include <QMetaObject>
 
 #include <chrono>
+#include <memory>
 #include <utility>
 
 ArchiveJob::ArchiveJob(QObject* parent)
@@ -27,7 +28,13 @@ void ArchiveJob::start(std::function<void(const zipdesk::OperationHooks& hooks)>
     m_cancel.store(false);
     m_running.store(true);
 
-    auto* thread = QThread::create([this, task = std::move(task)]() {
+    struct Outcome {
+        bool cancelled = false;
+        bool failed = false;
+        QString message;
+    };
+    const auto outcome = std::make_shared<Outcome>();
+    auto* thread = QThread::create([this, outcome, task = std::move(task)]() {
         zipdesk::OperationHooks hooks;
         hooks.cancel = &m_cancel;
         auto lastEmit = std::chrono::steady_clock::now() - std::chrono::seconds(1);
@@ -58,25 +65,30 @@ void ArchiveJob::start(std::function<void(const zipdesk::OperationHooks& hooks)>
 
         try {
             task(hooks);
-            emit succeeded();
         } catch (const zipdesk::ArchiveError& error) {
             if (error.kind() == zipdesk::ErrorKind::Cancelled || m_cancel.load()) {
-                emit cancelled();
+                outcome->cancelled = true;
             } else {
-                emit failed(QString::fromStdWString(error.message()));
+                outcome->failed = true;
+                outcome->message = QString::fromStdWString(error.message());
             }
         } catch (const std::exception& error) {
-            emit failed(QString::fromLocal8Bit(error.what()));
+            outcome->failed = true;
+            outcome->message = QString::fromLocal8Bit(error.what());
         }
-        m_running.store(false);
     });
 
     m_thread = thread;
-    connect(thread, &QThread::finished, this, [this, thread]() {
+    connect(thread, &QThread::finished, this, [this, thread, outcome]() {
         if (m_thread == thread) {
             m_thread = nullptr;
         }
         thread->deleteLater();
+        m_running.store(false);
+        // Completion callbacks may immediately start another job (for example reload).
+        if (outcome->cancelled) emit cancelled();
+        else if (outcome->failed) emit failed(outcome->message);
+        else emit succeeded();
     });
     thread->start();
 }

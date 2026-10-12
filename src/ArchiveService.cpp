@@ -13,6 +13,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <ctime>
@@ -74,8 +75,8 @@ bool isPasswordError(const bit7z::BitException& error) {
     return error.code() == bit7z::make_error_condition(bit7z::BitFailureSource::WrongPassword);
 }
 
-[[noreturn]] void rethrowBit(const bit7z::BitException& error) {
-    if (isCancelled(error)) {
+[[noreturn]] void rethrowBit(const bit7z::BitException& error, bool cancelRequested = false) {
+    if (cancelRequested && isCancelled(error)) {
         throw ArchiveError(ErrorKind::Cancelled, L"已取消");
     }
     if (error.code() == bit7z::make_error_code(bit7z::BitError::InvalidZipPassword)) {
@@ -570,7 +571,7 @@ ArchiveInfo ArchiveService::read(const std::wstring& archivePath,
         } catch (const bit7z::BitException& error) {
             ArchiveError translated(ErrorKind::Other, L"");
             try {
-                rethrowBit(error);
+                rethrowBit(error, hooks.cancel != nullptr && hooks.cancel->load());
             } catch (const ArchiveError& caught) {
                 translated = caught;
             }
@@ -634,7 +635,7 @@ void ArchiveService::extract(const ExtractRequest& request, const OperationHooks
         } catch (const bit7z::BitException& error) {
             ArchiveError translated(ErrorKind::Other, L"");
             try {
-                rethrowBit(error);
+                rethrowBit(error, hooks.cancel != nullptr && hooks.cancel->load());
             } catch (const ArchiveError& caught) {
                 translated = caught;
             }
@@ -653,6 +654,86 @@ void ArchiveService::extract(const ExtractRequest& request, const OperationHooks
         }
     }
     throw ArchiveError(ErrorKind::Password, L"密码不正确");
+}
+
+void ArchiveService::move(const ExtractRequest& request, const OperationHooks& hooks) const {
+    if (request.indices.empty() || request.overwrite != OverwritePolicy::Overwrite) {
+        throw ArchiveError(ErrorKind::Other, L"移动需要选择项目，并完整写入目标文件，不能跳过同名文件。");
+    }
+    const auto checkCancelled = [&]() {
+        if (hooks.cancel && hooks.cancel->load())
+            throw ArchiveError(ErrorKind::Cancelled, L"已取消移动，目标目录可能保留已复制的文件。");
+    };
+    checkCancelled();
+    const auto info = read(request.archivePath, request.password, hooks);
+    if (info.format == ArchiveFormat::Rar)
+        throw ArchiveError(ErrorKind::Other, L"不能从 RAR 移除文件，请使用复制。");
+    for (auto index : request.indices) {
+        if (std::none_of(info.entries.begin(), info.entries.end(),
+                         [index](const auto& entry) { return entry.index == index; }))
+            throw ArchiveError(ErrorKind::Other, L"所选项目已变化，请重新打开压缩包后再试。");
+    }
+    ExtractRequest current = request;
+    current.password = info.password;
+    current.indices = expandSelection(info.entries, request.indices);
+    current.relativePaths.clear();
+    for (const auto& entry : info.entries) {
+        if (!included(current.indices, entry.index)) continue;
+        const fs::path relative(entry.path);
+        if (entry.isLink || relative.empty() || relative.is_absolute() ||
+            std::any_of(relative.begin(), relative.end(), [](const auto& part) { return part == L".."; }))
+            throw ArchiveError(ErrorKind::Other, L"所选项目包含链接或异常路径，请先使用复制并检查文件。");
+        current.relativePaths.push_back(entry.path);
+    }
+    extract(current, hooks);
+    checkCancelled();
+
+    // Read each written file back before deleting anything from the archive.
+    static const auto crcTable = []() {
+        std::array<std::uint32_t, 256> table{};
+        for (std::uint32_t i = 0; i < table.size(); ++i) {
+            auto value = i;
+            for (int bit = 0; bit < 8; ++bit)
+                value = (value >> 1) ^ ((value & 1) ? 0xedb88320u : 0u);
+            table[i] = value;
+        }
+        return table;
+    }();
+    std::array<char, 65536> buffer{};
+    for (const auto& entry : info.entries) {
+        if (!included(current.indices, entry.index)) continue;
+        checkCancelled();
+        if (hooks.onFile) hooks.onFile(L"正在核对：" + entry.path);
+        const auto output = fs::path(current.outputDir) / entry.path;
+        const auto mismatch = [&]() {
+            return ArchiveError(ErrorKind::Other, L"目标文件核对未通过，尚未从压缩包移除任何项目：" + entry.path);
+        };
+        if (entry.isDir) {
+            if (!fs::is_directory(output)) throw mismatch();
+            continue;
+        }
+        if (!fs::is_regular_file(output) || fs::file_size(output) != entry.size) throw mismatch();
+        std::ifstream input(output, std::ios::binary);
+        if (!input) throw mismatch();
+        std::uint32_t crc = 0xffffffffu;
+        std::uint64_t bytes = 0;
+        while (input) {
+            checkCancelled();
+            input.read(buffer.data(), buffer.size());
+            const auto count = input.gcount();
+            bytes += static_cast<std::uint64_t>(count);
+            for (std::streamsize i = 0; i < count; ++i)
+                crc = (crc >> 8) ^ crcTable[(crc ^ static_cast<unsigned char>(buffer[i])) & 0xff];
+        }
+        if (!input.eof() || bytes != entry.size || (entry.hasCrc && (crc ^ 0xffffffffu) != entry.crc))
+            throw mismatch();
+    }
+    checkCancelled();
+    try {
+        removeItems(current.archivePath, current.indices, current.password, hooks);
+    } catch (const ArchiveError& error) {
+        throw ArchiveError(error.kind(), L"文件已复制并核对，但从压缩包移除未完成。请检查两处文件。\n" + error.message());
+    }
 }
 
 void ArchiveService::compress(const CompressRequest& request, const OperationHooks& hooks) const {
@@ -709,7 +790,7 @@ void ArchiveService::compress(const CompressRequest& request, const OperationHoo
         if (request.sfx) removePath(payload);
         ArchiveError translated(ErrorKind::Other, L"");
         try {
-            rethrowBit(error);
+            rethrowBit(error, hooks.cancel != nullptr && hooks.cancel->load());
         } catch (const ArchiveError& caught) {
             translated = caught;
         }
@@ -762,7 +843,7 @@ void ArchiveService::append(const AppendRequest& request, const OperationHooks& 
         } catch (const bit7z::BitException& error) {
             ArchiveError translated(ErrorKind::Other, L"");
             try {
-                rethrowBit(error);
+                rethrowBit(error, hooks.cancel != nullptr && hooks.cancel->load());
             } catch (const ArchiveError& caught) {
                 translated = caught;
             }
@@ -798,7 +879,7 @@ std::vector<std::uint8_t> ArchiveService::readItem(const std::wstring& archivePa
         } catch (const bit7z::BitException& error) {
             ArchiveError translated(ErrorKind::Other, L"");
             try {
-                rethrowBit(error);
+                rethrowBit(error, hooks.cancel != nullptr && hooks.cancel->load());
             } catch (const ArchiveError& caught) {
                 translated = caught;
             }
@@ -877,7 +958,7 @@ void editArchive(const bit7z::Bit7zLibrary& library,
         } catch (const bit7z::BitException& error) {
             ArchiveError translated(ErrorKind::Other, L"");
             try {
-                rethrowBit(error);
+                rethrowBit(error, hooks.cancel != nullptr && hooks.cancel->load());
             } catch (const ArchiveError& caught) {
                 translated = caught;
             }
@@ -914,7 +995,7 @@ void ArchiveService::test(const std::wstring& archivePath, std::wstring password
         } catch (const bit7z::BitException& error) {
             ArchiveError translated(ErrorKind::Other, L"");
             try {
-                rethrowBit(error);
+                rethrowBit(error, hooks.cancel != nullptr && hooks.cancel->load());
             } catch (const ArchiveError& caught) {
                 translated = caught;
             }

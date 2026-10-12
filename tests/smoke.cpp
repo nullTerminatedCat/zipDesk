@@ -468,6 +468,70 @@ void testSmartExtractDestination() {
     check(zipdesk::parseLaunch({L"ZipDesk.exe", L"--extract-smart"}).action == zipdesk::LaunchAction::None,
           "smart extract without a path does not launch");
 }
+void testMove(zipdesk::ArchiveService& service, const fs::path& root, zipdesk::ArchiveFormat format) {
+    for (const std::string mode : {"overwrite", "cancel", "failure", "tamper", "cancel-verify", "skip"}) {
+        const auto work = root / mode;
+        writeFile(work / "source/sample.txt", "sample");
+        writeFile(work / "source/keep.txt", "keep");
+        zipdesk::CompressRequest compression;
+        compression.inputs = {(work / "source/sample.txt").wstring(), (work / "source/keep.txt").wstring()};
+        compression.outputPath = (work / (format == zipdesk::ArchiveFormat::Zip ? "archive.zip" : "archive.7z")).wstring();
+        compression.format = format;
+        service.compress(compression, {});
+        const auto before = readFile(compression.outputPath);
+        const auto info = service.read(compression.outputPath, L"", {});
+        zipdesk::ExtractRequest move;
+        move.archivePath = compression.outputPath;
+        move.outputDir = (work / "output").wstring();
+        for (const auto& entry : info.entries)
+            if (entry.path == L"sample.txt") move.indices = {entry.index};
+        check(move.indices.size() == 1, "move fixture has a selected item");
+        const auto target = work / "output/sample.txt";
+        if (mode == "failure") writeFile(target / "blocker.txt", "keep");
+        else writeFile(target, "existing");
+        std::atomic<bool> cancel{mode == "cancel"};
+        zipdesk::OperationHooks hooks;
+        hooks.cancel = &cancel;
+        hooks.onFile = [&](const std::wstring& path) {
+            if (path.find(L"正在核对：") != 0) return;
+            if (mode == "tamper") writeFile(target, "tamper");
+            if (mode == "cancel-verify") cancel.store(true);
+        };
+        if (mode == "skip") move.overwrite = zipdesk::OverwritePolicy::Skip;
+        bool failed = false;
+        try { service.move(move, hooks); }
+        catch (const std::exception&) { failed = true; }
+        check(failed == (mode != "overwrite"), "move outcome matches scenario");
+        if (mode == "overwrite") {
+            check(readFile(target) == "sample", "move replaces the destination with the selected file");
+            const auto after = service.read(move.archivePath, L"", {});
+            check(after.entries.size() == 1 && containsPath(after, L"keep.txt", 4),
+                  "move removes only the verified selected item");
+        } else {
+            check(readFile(move.archivePath) == before, "failed or cancelled move preserves original archive bytes");
+            service.test(move.archivePath, L"", {});
+        }
+    }
+    const auto work = root / "directory";
+    writeFile(work / "source/folder/nested/child.txt", "child");
+    writeFile(work / "source/keep.txt", "keep");
+    zipdesk::CompressRequest compression;
+    compression.inputs = {(work / "source/folder").wstring(), (work / "source/keep.txt").wstring()};
+    compression.outputPath = (work / (format == zipdesk::ArchiveFormat::Zip ? "archive.zip" : "archive.7z")).wstring();
+    compression.format = format;
+    service.compress(compression, {});
+    const auto info = service.read(compression.outputPath, L"", {});
+    zipdesk::ExtractRequest move;
+    move.archivePath = compression.outputPath;
+    move.outputDir = (work / "output").wstring();
+    for (const auto& entry : info.entries)
+        if (entry.isDir && (entry.path == L"folder" || entry.path == L"folder/")) move.indices = {entry.index};
+    service.move(move, {});
+    check(readFile(work / "output/folder/nested/child.txt") == "child", "moving a folder includes descendants");
+    const auto after = service.read(move.archivePath, L"", {});
+    check(after.entries.size() == 1 && containsPath(after, L"keep.txt", 4), "folder move preserves unrelated items");
+}
+
 int main() {
     testSmartExtractDestination();
     testLaunchParser();
@@ -484,6 +548,8 @@ int main() {
         testRoundTrip(service, zipdesk::ArchiveFormat::SevenZip, root / "7z");
         testOverwriteAndCancel(service, root / "zip");
         testSourceArchiveProtection(service, root / "zip");
+        testMove(service, root / "move-zip", zipdesk::ArchiveFormat::Zip);
+        testMove(service, root / "move-7z", zipdesk::ArchiveFormat::SevenZip);
     } catch (const std::exception& ex) {
         std::cerr << "FAIL: exception " << ex.what() << "\n";
         ++g_failures;

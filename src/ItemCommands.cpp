@@ -637,21 +637,26 @@ void MainWindow::moveSelectedTo() {
     if (directory.isEmpty()) {
         return;
     }
-    std::vector<std::uint32_t> indices;
+    if (QMessageBox::question(this, "移动所选项目",
+            QString("将选中的 %1 项移动到：\n%2\n\n文件写入并核对成功后，会从压缩包中移除。")
+                .arg(entries.size()).arg(QDir::toNativeSeparators(directory)),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
+    zipdesk::ExtractRequest request;
+    request.archivePath = m_path;
+    request.password = m_password;
+    request.outputDir = directory.toStdWString();
     for (const auto& entry : entries) {
-        indices.push_back(entry.index);
+        request.indices.push_back(entry.index);
     }
-    extractEntries(entries, directory, [this, indices, directory]() {
-        begin(
-            "正在从压缩包移除",
-            [this, indices](const zipdesk::OperationHooks& hooks) {
-                m_service.removeItems(m_path, indices, m_password, hooks);
-            },
-            [this, directory]() {
-                statusBar()->showMessage("已移动到 " + directory);
-                reloadArchive();
-            });
-    }, true, false);
+    const auto expanded = zipdesk::expandSelection(m_entries, request.indices);
+    if (zipdesk::hasConflicts(m_entries, expanded, request.outputDir) && !askOverwrite(false)) return;
+    m_extractOutputDir = directory;
+    begin("正在移动",
+        [this, request](const zipdesk::OperationHooks& hooks) { m_service.move(request, hooks); },
+        [this, directory]() {
+            showExtractIssue("移动完成", "所选项目已写入目标目录，并从压缩包中移除。", directory, false);
+            reloadArchive();
+        });
 }
 
 void MainWindow::deleteSelected() {

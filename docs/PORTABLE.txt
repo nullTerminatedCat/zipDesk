@@ -7,6 +7,6 @@
 免安装指无需运行安装程序。窗口偏好和最近记录仍保存在当前用户设置中。
 文件关联和资源管理器菜单为可选功能，可在程序设置中启用。
 
-源码与问题反馈：https://github.com/huanglin2/zipDesk
+源码与问题反馈：https://github.com/nullTerminatedCat/zipDesk
 这是开发预览版。解压取消或失败可能保留部分文件，已覆盖文件不会自动恢复。
 第三方组件说明见 THIRD_PARTY_NOTICES.md 和 licenses 目录。

@@ -111,6 +111,7 @@ public:
 
     ArchiveInfo read(const std::wstring& archivePath, std::wstring password, const OperationHooks& hooks) const;
     void extract(const ExtractRequest& request, const OperationHooks& hooks) const;
+    void move(const ExtractRequest& request, const OperationHooks& hooks) const;
     void compress(const CompressRequest& request, const OperationHooks& hooks) const;
     void append(const AppendRequest& request, const OperationHooks& hooks) const;
     void test(const std::wstring& archivePath, std::wstring password, const OperationHooks& hooks) const;

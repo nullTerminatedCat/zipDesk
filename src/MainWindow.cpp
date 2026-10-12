@@ -1489,6 +1489,7 @@ void MainWindow::onSucceeded() {
 }
 
 void MainWindow::onFailed(const QString& message) {
+    const bool moving = m_activeOperation == "正在移动";
     const QString extractDir = m_extractOutputDir;
     m_extractOutputDir.clear();
     m_activeOperation.clear();
@@ -1508,7 +1509,7 @@ void MainWindow::onFailed(const QString& message) {
     if (extractDir.isEmpty()) {
         QMessageBox::warning(isShellExtract() ? nullptr : this, "青匣", message);
     } else {
-        showExtractIssue("解压未完成", message + "\n\n目标目录可能已有部分文件，请检查后重试。",
+        showExtractIssue(moving ? "移动未完成" : "解压未完成", message + "\n\n目标目录可能已有部分文件，请检查后重试。",
                          extractDir, true);
     }
     if (isShellAction()) {
@@ -1517,6 +1518,7 @@ void MainWindow::onFailed(const QString& message) {
 }
 
 void MainWindow::onCancelled() {
+    const bool moving = m_activeOperation == "正在移动";
     const QString extractDir = m_extractOutputDir;
     m_extractOutputDir.clear();
     m_activeOperation.clear();
@@ -1533,7 +1535,7 @@ void MainWindow::onCancelled() {
     } else if (extractDir.isEmpty()) {
         statusBar()->showMessage("已取消");
     } else {
-        showExtractIssue("解压已取消", "目标目录可能已有部分文件，请检查。", extractDir, false);
+        showExtractIssue(moving ? "移动已取消" : "解压已取消", "目标目录可能已有部分文件，请检查。", extractDir, false);
     }
     if (isShellAction()) {
         QCoreApplication::quit();

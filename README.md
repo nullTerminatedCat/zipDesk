@@ -2,11 +2,13 @@
 
 一个面向 Windows 的轻量压缩文件管理器。打开压缩包、查看内容、按需解压，也可以通过拖放或资源管理器右键菜单创建压缩包。
 
-> 当前为 **0.1.0 预览版本**。可从 [GitHub Releases](https://github.com/huanglin2/zipDesk/releases/tag/v0.1.0) 下载 Windows x64 安装包或免安装 ZIP；功能和界面仍在完善。
+> 当前为 **0.1.0 预览版本**。可从 [GitHub Releases](https://github.com/nullTerminatedCat/zipDesk/releases/tag/v0.1.0) 下载 Windows x64 安装包或免安装 ZIP；功能和界面仍在完善。
 
 ![青匣主页](docs/screenshots/home.png)
 
 ![压缩包浏览界面](docs/screenshots/archive.png)
+
+以下功能描述以当前源码为准，已发布二进制的功能以对应 Release 说明为准。
 
 ## 功能
 
@@ -27,7 +29,7 @@
 
 ## 获取与使用
 
-在 [Release 页面](https://github.com/huanglin2/zipDesk/releases/tag/v0.1.0) 下载 `setup.exe` 安装包，或完整解压 `portable.zip` 后运行 `ZipDesk.exe`。两种包均包含 Qt、7-Zip 和 Visual C++ 运行库，另附 SHA-256 校验文件。程序未做代码签名。
+在 [Release 页面](https://github.com/nullTerminatedCat/zipDesk/releases/tag/v0.1.0) 下载 `setup.exe` 安装包，或完整解压 `portable.zip` 后运行 `ZipDesk.exe`。两种包均包含 Qt、7-Zip 和 Visual C++ 运行库，另附 SHA-256 校验文件。程序未做代码签名。
 
 启动后，可以拖入 ZIP、7z、RAR 查看内容，或拖入普通文件和文件夹创建压缩包。打开压缩包后，工具栏提供解压、添加和完整性测试等操作。也可以按下文从源码构建。
 
@@ -43,6 +45,12 @@
 - 目标有同名文件：询问覆盖、跳过或取消；完成后可直接打开实际内容目录。
 
 已启用过资源管理器集成的用户，需要用新版本重新注册才能看到新增菜单。也可以运行 `ZipDesk.exe --extract-smart "C:\path\example.zip"`。当前智能解压针对单个压缩包。
+
+### 移动压缩包内的文件
+
+当前源码中的“移动所选到…”会先确认目标和移除行为，再完整解压并读回核对文件大小及可用的 CRC，核对通过后才从压缩包移除所选项目。移动流程不提供“跳过同名文件”，避免未写入目标的文件被移除。
+
+成功后可打开目标文件夹；失败或取消时会提示检查已写入的文件。链接条目不支持直接移动，请先复制并检查。目标文件已经被覆盖时不会自动恢复。
 
 ### 解压结果与文件保护
 
@@ -79,7 +87,7 @@ build\ZipDesk.exe
 ctest --test-dir build --output-on-failure
 ```
 
-默认启用 CTest。找到 Qt Test 时共注册 15 项测试，覆盖归档服务、压缩对话框、主窗口，以及解压完成、跳过同名文件、取消和失败；智能解压还覆盖顶层目录、混合项目、空包、已有目录冲突及窗口菜单入口。界面测试使用 Windows Qt 平台插件，CTest 会配置 Qt DLL 搜索路径；未安装 Qt Test 时仅运行服务层测试。
+默认启用 CTest。找到 Qt Test 时共注册 19 项测试，覆盖归档服务、压缩对话框、主窗口，以及解压完成、跳过同名文件、取消和失败；智能解压还覆盖顶层目录、混合项目、空包、已有目录冲突及窗口菜单入口；移动测试覆盖覆盖同名文件、取消、拒绝确认和写入失败。界面测试使用 Windows Qt 平台插件，CTest 会配置 Qt DLL 搜索路径；未安装 Qt Test 时仅运行服务层测试。
 
 ### 制作安装包
 
