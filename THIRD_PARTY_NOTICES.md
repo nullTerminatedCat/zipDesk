@@ -1,6 +1,6 @@
 # Third-party components
 
-QingXia 0.1.0 Windows x64 binaries include these components. Their licenses apply independently of the QingXia application code. This repository has not yet selected a license for its own code.
+QingXia 0.1.0 Windows x64 binaries include these components. Their licenses apply independently of the QingXia application code, which is licensed under the MIT License in the repository's `LICENSE` file.
 
 | Component | Version | License / source |
 | --- | --- | --- |

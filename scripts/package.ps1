@@ -24,6 +24,7 @@ foreach ($required in @('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll'
 Copy-Item (Join-Path $RuntimeDirectory '*.dll') $payload
 Copy-Item docs/licenses (Join-Path $payload 'licenses') -Recurse
 Copy-Item THIRD_PARTY_NOTICES.md $payload
+Copy-Item LICENSE $payload
 Copy-Item docs/PORTABLE.txt $payload
 $revision = (git rev-parse HEAD).Trim()
 "Version: $version`r`nSource revision: $revision" | Set-Content (Join-Path $payload 'BUILD.txt') -Encoding UTF8

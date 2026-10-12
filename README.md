@@ -123,4 +123,6 @@ build\ZipDesk.exe a result.7z file1.txt folder
 
 欢迎通过 Issue 报告可复现的问题，或通过 Pull Request 提交改进。提交前请运行相关冒烟测试，并说明改动涉及的使用场景。
 
-**项目自身尚未选择开源许可证。** 第三方组件的许可和源码地址见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，对应许可文本随二进制包分发。
+项目自身的代码与文档采用 [MIT 许可证](LICENSE)，版权归 huanglin2 所有。允许使用、修改和分发，分发时须保留版权及许可声明。
+
+第三方组件继续适用各自的许可证，其许可和源码地址见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，对应许可文本随二进制包分发。
