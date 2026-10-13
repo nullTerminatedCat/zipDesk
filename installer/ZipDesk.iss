@@ -1,8 +1,11 @@
 ; 青匣安装脚本。在 installer 目录用 ISCC 编译。
 
 #define AppName "青匣"
-#define AppVersion "0.1.0"
+#define AppVersion "0.2.0"
 #define AppExe "ZipDesk.exe"
+#ifndef AppArchitecture
+  #define AppArchitecture "x64"
+#endif
 #ifndef AppSourceDir
   #error Use scripts/package.ps1 to prepare the release payload.
 #endif
@@ -16,14 +19,18 @@ DefaultDirName={localappdata}\Programs\ZipDesk
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputDir=..\dist
-OutputBaseFilename=QingXia-{#AppVersion}-windows-x64-setup
+OutputBaseFilename=QingXia-{#AppVersion}-windows-{#AppArchitecture}-setup
 SetupIconFile=..\resources\app.ico
 UninstallDisplayIcon={app}\{#AppExe}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+#if AppArchitecture == "x86"
+ArchitecturesAllowed=x86compatible
+#else
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+#endif
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 CloseApplications=yes

@@ -26,6 +26,7 @@
 #include <QDropEvent>
 #include <QEventLoop>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QButtonGroup>
 #include <QDialog>
 #include <QFileDialog>
@@ -43,6 +44,7 @@
 #include <QProcess>
 #include <QRadioButton>
 #include <QSettings>
+#include <QScrollArea>
 #include <QShortcut>
 #include <QMenu>
 #include <QMessageBox>
@@ -56,6 +58,8 @@
 #include <QStatusBar>
 #include <QStackedWidget>
 #include <QStyle>
+#include <QStyledItemDelegate>
+#include <QStyleOptionViewItem>
 #include <QToolTip>
 #include <QTableView>
 #include <QThread>
@@ -78,6 +82,62 @@
 namespace {
 
 constexpr auto kInternalMime = "application/x-zipdesk-internal";
+
+// Keep long archive names from dictating the window's minimum width.
+class ElidedLabel : public QLabel {
+public:
+    using QLabel::QLabel;
+    QSize minimumSizeHint() const override { return {0, QLabel::minimumSizeHint().height()}; }
+    QSize sizeHint() const override { return {160, QLabel::sizeHint().height()}; }
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.setPen(palette().color(QPalette::WindowText));
+        painter.setFont(font());
+        painter.drawText(contentsRect(), Qt::AlignVCenter | Qt::AlignLeft,
+                         fontMetrics().elidedText(text(), Qt::ElideMiddle, contentsRect().width()));
+    }
+};
+
+class RecentArchiveDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    QSize sizeHint(const QStyleOptionViewItem&, const QModelIndex&) const override { return {200, 62}; }
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        QStyleOptionViewItem background(option);
+        initStyleOption(&background, index);
+        background.text.clear();
+        background.icon = QIcon();
+        const QStyle* style = option.widget ? option.widget->style() : QApplication::style();
+        style->drawControl(QStyle::CE_ItemViewItem, &background, painter, option.widget);
+        painter->save();
+        const QRect rect = option.rect.adjusted(14, 8, -14, -8);
+        qvariant_cast<QIcon>(index.data(Qt::DecorationRole)).paint(painter, QRect(rect.left(), rect.top() + 11, 24, 24));
+        const QRect title = rect.adjusted(38, 0, 0, -22);
+        QFont font = option.font;
+        font.setWeight(QFont::DemiBold);
+        painter->setFont(font);
+        painter->setPen(QColor("#20332f"));
+        painter->drawText(title, Qt::AlignVCenter, QFontMetrics(font).elidedText(index.data().toString(), Qt::ElideMiddle, title.width()));
+        font.setWeight(QFont::Normal);
+        painter->setFont(font);
+        painter->setPen(QColor("#667b75"));
+        const QRect path = rect.adjusted(38, 24, 0, 0);
+        painter->drawText(path, Qt::AlignVCenter, QFontMetrics(font).elidedText(index.data(Qt::UserRole + 1).toString(), Qt::ElideMiddle, path.width()));
+        painter->restore();
+    }
+};
+
+class HomeScrollArea : public QScrollArea {
+public:
+    std::function<void(int)> onWidthChanged;
+protected:
+    bool viewportEvent(QEvent* event) override {
+        const bool result = QScrollArea::viewportEvent(event);
+        if (event->type() == QEvent::Resize && onWidthChanged) onWidthChanged(viewport()->width());
+        return result;
+    }
+};
 
 QString humanSize(quint64 bytes) {
     static const char* units[] = {"B", "KB", "MB", "GB", "TB"};
@@ -127,7 +187,8 @@ QIcon pinIcon(bool pinned) {
 }
 
 QIcon toolGlyph(const QString& name, const QColor& color = QColor("#3a6762")) {
-    QPixmap pixmap(20, 20);
+    QPixmap pixmap(40, 40);
+    pixmap.setDevicePixelRatio(2);
     pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
@@ -178,7 +239,8 @@ QIcon toolGlyph(const QString& name, const QColor& color = QColor("#3a6762")) {
 }
 
 QIcon archiveItemGlyph(bool folder) {
-    QPixmap pixmap(19, 19);
+    QPixmap pixmap(38, 38);
+    pixmap.setDevicePixelRatio(2);
     pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
@@ -613,13 +675,14 @@ void MainWindow::buildUi() {
     m_stayOnTop = QSettings().value(QStringLiteral("ui/stayOnTop"), false).toBool();
     setWindowTitle("青匣");
     setWindowIcon(QIcon(":/assets/icon.png"));
+    setFont(QFont("Microsoft YaHei UI", 9));
     resize(980, 680);
     setStyleSheet(
-        "QWidget:focus { outline: none; }"
+        "QWidget { font-size: 13px; }"
         "QLabel#dropHint { background: rgba(22, 116, 104, 0.14); color: #0f6e6b; border: 2px dashed #167468; "
         "border-radius: 16px; font-size: 18px; font-weight: 700; margin: 18px; }"
-        "QMainWindow, QDialog { background: #f4f8f7; color: #203b37; }"
-        "QToolBar { background: #f4f8f7; border: none; spacing: 7px; padding: 10px 20px 6px; }"
+        "QMainWindow, QDialog { background: #f5f7fa; color: #20332f; }"
+        "QToolBar { background: #ffffff; border: none; border-bottom: 1px solid #e3eae7; spacing: 8px; padding: 10px 20px; }"
         "QWidget#titleBar { background: #ffffff; border: none; border-bottom: 1px solid #e0eae6; }"
         "QLabel#captionTitle { font-size: 13px; font-weight: 600; color: #213c38; padding-left: 9px; }"
         "QToolButton#captionButton, QToolButton#closeButton { background: transparent; border: none; border-radius: 7px; padding: 0; }"
@@ -632,32 +695,51 @@ void MainWindow::buildUi() {
         "QToolButton#toolButton, QPushButton { background: #ffffff; color: #294b45; border: 1px solid #d9e6e1; border-radius: 9px; padding: 8px 13px; }"
         "QToolButton#toolButton:hover, QPushButton:hover { background: #f6fbf9; border-color: #8abbb0; }"
         "QToolButton#toolButton:checked { background: #e0f3ed; border-color: #8abbb0; }"
+        "QToolButton#toolButton:focus, QToolButton#primaryButton:focus, QPushButton:focus { border: 1px solid #147d70; background: #e2f3ed; color: #174e45; }"
         "QToolButton:disabled, QPushButton:disabled { color: #9aada7; }"
         "QPushButton#quietButton { background: transparent; border: none; color: #167468; padding: 5px 7px; }"
         "QPushButton#quietButton:hover { background: #e7f4ef; }"
-        "QFrame#heroCard, QFrame#archiveCard { background: #ffffff; border: 1px solid #e0eae6; border-radius: 16px; }"
-        "QLabel#heroEyebrow { color: #167468; font-size: 11px; font-weight: 700; }"
-        "QLabel#emptyTitle { color: #193b35; font-size: 25px; font-weight: 700; }"
-        "QLabel#emptyBody { color: #6e817b; font-size: 12px; }"
-        "QLabel#recentTitle { color: #25463f; font-size: 13px; font-weight: 600; }"
+        "QFrame#heroCard { background: #123f39; border: 1px solid #123f39; border-radius: 16px; }"
+        "QFrame#archiveCard { background: #ffffff; border: 1px solid #dfe7e4; border-radius: 12px; }"
+        "QLabel#heroEyebrow { color: #9bcec0; font-size: 12px; font-weight: 600; }"
+        "QLabel#emptyTitle { color: #ffffff; font-size: 26px; font-weight: 700; }"
+        "QLabel#emptyBody { color: #c2d8d1; font-size: 13px; }"
+        "QPushButton#homeOpen { background: #d8f2e8; color: #123f39; border: 1px solid #d8f2e8; padding: 11px 18px; font-weight: 600; }"
+        "QPushButton#homeOpen:hover { background: #effbf6; }"
+        "QPushButton#homeOpen:focus { border: 2px solid #ffffff; padding: 10px 17px; }"
+        "QPushButton#homeNew { background: #20534a; color: #ffffff; border: 1px solid #558278; padding: 11px 18px; }"
+        "QPushButton#homeNew:hover, QPushButton#homeNew:focus { background: #2d675d; border-color: #c2d8d1; }"
+        "QLabel#recentTitle, QLabel#fileHeading { color: #20332f; font-size: 15px; font-weight: 600; }"
+        "QLabel#archiveSummary, QLabel#homeHint { color: #667b75; font-size: 12px; }"
+        "QLabel#emptyResultTitle { color: #20332f; font-size: 18px; font-weight: 600; }"
+        "QLabel#emptyResultBody { color: #667b75; }"
         "QLabel#archiveLocation { color: #35534d; font-size: 13px; font-weight: 600; }"
         "QToolButton#locationUp { background: white; border: 1px solid #d9e6e1; border-radius: 9px; }"
         "QToolButton#locationUp:hover { border-color: #8abbb0; background: #f6fbf9; }"
         "QToolButton#locationUp:disabled { background: #f2f6f4; border-color: #e8efec; }"
-        "QTableView { background: transparent; border: none; alternate-background-color: #f8fbfa; selection-background-color: #ddf2eb; selection-color: #193b35; outline: none; }"
+        "QTableView { background: white; color: #20332f; border: none; alternate-background-color: #f8faf9; selection-background-color: #e0f2eb; selection-color: #123f39; }"
+        "QTableView::item { padding: 0 8px; border: none; }"
+        "QTableView::item:focus { border: 1px solid #79ac9e; }"
         "QHeaderView::section { background: #fbfdfc; color: #657e76; padding: 11px 12px; border: none; border-bottom: 1px solid #e3ece8; font-weight: 600; }"
-        "QStatusBar { background: #f4f8f7; color: #738780; border-top: 1px solid #e4ece9; }"
+        "QStatusBar { background: #ffffff; color: #667b75; border-top: 1px solid #e4ece9; padding: 3px 10px; }"
+        "QStatusBar::item { border: none; }"
         "QMenu { background: #ffffff; color: #294b45; border: 1px solid #dfeae5; padding: 5px; }"
         "QMenu::item { padding: 7px 20px; border-radius: 5px; }"
         "QMenu::item:selected { background: #e6f4ef; }"
         "QLineEdit, QComboBox, QListWidget { background: #ffffff; color: #294b45; border: 1px solid #d9e6e1; border-radius: 9px; padding: 7px 9px; selection-background-color: #d8eee7; }"
         "QLineEdit:focus, QComboBox:focus, QListWidget:focus { border-color: #4aa18f; }"
+        "QListWidget#recentArchives { padding: 4px; }"
+        "QListWidget#recentArchives::item { border-radius: 6px; }"
+        "QListWidget#recentArchives::item:hover { background: #f0f6f3; }"
+        "QListWidget#recentArchives::item:selected { background: #e0f2eb; }"
+        "QPlainTextEdit { background: white; color: #20332f; border: 1px solid #dfe7e4; border-radius: 8px; padding: 8px; }"
+        "QSplitter::handle { background: transparent; width: 10px; }"
         "QProgressBar { border: none; background: #e6efeb; border-radius: 5px; min-height: 8px; }"
         "QProgressBar::chunk { background: #167468; border-radius: 5px; }");
 
     m_titleBar = new QWidget(this);
     m_titleBar->setObjectName("titleBar");
-    m_titleBar->setFixedHeight(40);
+    m_titleBar->setFixedHeight(44);
     m_titleBar->setAttribute(Qt::WA_StyledBackground, true);
     auto* captionLayout = new QHBoxLayout(m_titleBar);
     captionLayout->setContentsMargins(10, 0, 0, 0);
@@ -666,7 +748,7 @@ void MainWindow::buildUi() {
     captionIcon->setPixmap(QIcon(":/assets/icon.png").pixmap(18, 18));
     captionIcon->setAttribute(Qt::WA_TransparentForMouseEvents);
     captionLayout->addWidget(captionIcon);
-    m_captionTitle = new QLabel("青匣", m_titleBar);
+    m_captionTitle = new ElidedLabel("青匣", m_titleBar);
     m_captionTitle->setObjectName("captionTitle");
     m_captionTitle->setMinimumWidth(245);
     m_captionTitle->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -732,6 +814,8 @@ void MainWindow::buildUi() {
 
     m_newButton = makeToolButton(toolbar, "新建压缩", false);
     m_newAction = new QAction("新建压缩", this);
+    m_newAction->setShortcut(QKeySequence::New);
+    addAction(m_newAction);
     connect(m_newAction, &QAction::triggered, this, [this]() { createArchive({}); });
     connect(m_newButton, &QToolButton::clicked, m_newAction, &QAction::trigger);
 
@@ -747,7 +831,8 @@ void MainWindow::buildUi() {
     m_extractSelectedAction = m_extractMenu->addAction("解压所选到…", this, [this]() { extractArchive(true, false); });
     m_extractSelectedFolderAction =
         m_extractMenu->addAction("解压所选到同名文件夹", this, [this]() { extractArchive(true, true); });
-    m_extractButton = makeToolButton(toolbar, "解压", false);
+    m_extractButton = makeToolButton(toolbar, "解压", true);
+    m_extractButton->setIcon(toolGlyph("解压", Qt::white));
     m_extractButton->setMenu(m_extractMenu);
     m_extractButton->setPopupMode(QToolButton::InstantPopup);
 
@@ -814,7 +899,8 @@ void MainWindow::buildUi() {
     table->setAlternatingRowColors(true);
     table->setFrameShape(QFrame::NoFrame);
     table->verticalHeader()->setVisible(false);
-    table->verticalHeader()->setDefaultSectionSize(36);
+    table->verticalHeader()->setDefaultSectionSize(40);
+    table->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     table->horizontalHeader()->setStretchLastSection(false);
     table->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     table->horizontalHeader()->setMinimumSectionSize(56);
@@ -823,6 +909,7 @@ void MainWindow::buildUi() {
     table->horizontalHeader()->resizeSection(2, 120);
     table->horizontalHeader()->resizeSection(3, 160);
     table->horizontalHeader()->resizeSection(4, 72);
+    table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     table->setSortingEnabled(true);
     table->sortByColumn(0, Qt::AscendingOrder);
     table->onDrag = [this]() { dragOutSelection(); };
@@ -836,7 +923,44 @@ void MainWindow::buildUi() {
     card->setObjectName("archiveCard");
     auto* cardLayout = new QVBoxLayout(card);
     cardLayout->setContentsMargins(8, 8, 8, 8);
-    cardLayout->addWidget(table);
+    auto* fileHeading = new QHBoxLayout;
+    fileHeading->setContentsMargins(12, 8, 12, 10);
+    auto* fileTitle = new QLabel("压缩包内容", card);
+    fileTitle->setProperty("i18n", "压缩包内容");
+    fileTitle->setObjectName("fileHeading");
+    m_archiveSummary = new QLabel(card);
+    m_archiveSummary->setObjectName("archiveSummary");
+    fileHeading->addWidget(fileTitle);
+    fileHeading->addStretch();
+    fileHeading->addWidget(m_archiveSummary);
+    cardLayout->addLayout(fileHeading);
+    m_fileStack = new QStackedWidget(card);
+    m_fileStack->addWidget(table);
+    auto* emptyResult = new DropLabel;
+    emptyResult->setAcceptDrops(true);
+    emptyResult->onDrop = [this](const QList<QUrl>& urls) { handleDropped(urls); };
+    emptyResult->onDragActive = [this](bool active) { showDropHint(active); };
+    emptyResult->setObjectName("archiveEmptyState");
+    auto* emptyResultLayout = new QVBoxLayout(emptyResult);
+    emptyResultLayout->setSpacing(12);
+    emptyResultLayout->addStretch();
+    m_emptyResultTitle = new QLabel(emptyResult);
+    m_emptyResultTitle->setObjectName("emptyResultTitle");
+    m_emptyResultTitle->setAlignment(Qt::AlignCenter);
+    m_emptyResultBody = new QLabel(emptyResult);
+    m_emptyResultBody->setObjectName("emptyResultBody");
+    m_emptyResultBody->setAlignment(Qt::AlignCenter);
+    m_emptyResultBody->setWordWrap(true);
+    auto* clearSearch = new QPushButton("清除搜索", emptyResult);
+    clearSearch->setObjectName("clearArchiveSearch");
+    clearSearch->setProperty("i18n", "清除搜索");
+    m_clearSearchButton = clearSearch;
+    emptyResultLayout->addWidget(m_emptyResultTitle);
+    emptyResultLayout->addWidget(m_emptyResultBody);
+    emptyResultLayout->addWidget(clearSearch, 0, Qt::AlignHCenter);
+    emptyResultLayout->addStretch();
+    m_fileStack->addWidget(emptyResult);
+    cardLayout->addWidget(m_fileStack, 1);
     m_archivePage = new QWidget;
     auto* archiveLayout = new QVBoxLayout(m_archivePage);
     archiveLayout->setContentsMargins(20, 8, 20, 16);
@@ -848,14 +972,31 @@ void MainWindow::buildUi() {
     m_upButton->setToolTip("上一级 (Alt+↑)");
     m_upButton->setFixedSize(36, 36);
     connect(m_upButton, &QToolButton::clicked, this, &MainWindow::navigateUp);
-    m_locationLabel = new QLabel;
+    m_locationLabel = new ElidedLabel;
     m_locationLabel->setObjectName("archiveLocation");
-    m_locationLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_locationLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_locationLabel->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_locationLabel, &QWidget::customContextMenuRequested, this, [this](const QPoint& point) {
+        QMenu menu(this);
+        menu.addAction(zipdesk::translate("复制压缩包路径"), this, [this]() {
+            QApplication::clipboard()->setText(QDir::toNativeSeparators(QString::fromStdWString(m_path)));
+        });
+        menu.exec(m_locationLabel->mapToGlobal(point));
+    });
     m_searchEdit = new QLineEdit;
     m_searchEdit->setObjectName("archiveSearch");
     m_searchEdit->setPlaceholderText("搜索文件或路径…");
     m_searchEdit->setClearButtonEnabled(true);
-    m_searchEdit->setFixedWidth(260);
+    m_searchEdit->setMinimumWidth(160);
+    m_searchEdit->setMaximumWidth(280);
+    connect(clearSearch, &QPushButton::clicked, m_searchEdit, &QLineEdit::clear);
+    auto* findAction = new QShortcut(QKeySequence::Find, this);
+    connect(findAction, &QShortcut::activated, this, [this]() {
+        if (!m_path.empty() && !m_busy) { m_searchEdit->setFocus(); m_searchEdit->selectAll(); }
+    });
+    auto* clearFind = new QShortcut(QKeySequence(Qt::Key_Escape), m_searchEdit);
+    clearFind->setContext(Qt::WidgetShortcut);
+    connect(clearFind, &QShortcut::activated, m_searchEdit, &QLineEdit::clear);
     m_searchTimer = new QTimer(this);
     m_searchTimer->setSingleShot(true);
     connect(m_searchTimer, &QTimer::timeout, this, &MainWindow::fillModel);
@@ -866,7 +1007,7 @@ void MainWindow::buildUi() {
     locationBar->addWidget(m_upButton);
     locationBar->addWidget(m_locationLabel, 1);
     locationBar->addWidget(m_previewButton);
-    locationBar->addWidget(m_searchEdit);
+    locationBar->addWidget(m_searchEdit, 1);
     archiveLayout->addLayout(locationBar);
     m_previewStack = new QStackedWidget;
     m_previewHint = new QLabel("选择文件可预览文本或图片");
@@ -906,29 +1047,33 @@ void MainWindow::buildUi() {
     addAction(goUp);
 
     auto* empty = new DropLabel;
+    empty->setObjectName("homeSurface");
+    empty->setStyleSheet("QLabel#homeSurface { background: #f5f7fa; }");
     empty->setAcceptDrops(true);
     empty->onDrop = [this](const QList<QUrl>& urls) { handleDropped(urls); };
     empty->onDragActive = [this](bool active) { showDropHint(active); };
     auto* emptyLayout = new QVBoxLayout(empty);
-    emptyLayout->setContentsMargins(24, 18, 24, 18);
-    emptyLayout->setSpacing(18);
+    emptyLayout->setSizeConstraint(QLayout::SetMinimumSize);
+    emptyLayout->setContentsMargins(28, 24, 28, 20);
+    emptyLayout->setSpacing(20);
     emptyLayout->addStretch(1);
     auto* hero = new QFrame(empty);
     hero->setObjectName("heroCard");
     hero->setMaximumWidth(820);
-    hero->setMinimumHeight(250);
+    hero->setMinimumHeight(230);
     hero->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     auto* heroLayout = new QHBoxLayout(hero);
-    heroLayout->setContentsMargins(34, 24, 20, 24);
+    heroLayout->setContentsMargins(30, 24, 20, 24);
     heroLayout->setSpacing(12);
     auto* heroCopy = new QVBoxLayout;
     heroCopy->setSpacing(10);
     auto* eyebrow = new QLabel("青匣 · ZIP / 7Z / RAR", hero);
     eyebrow->setObjectName("heroEyebrow");
     eyebrow->setProperty("i18n", "青匣 · ZIP / 7Z / RAR");
-    auto* emptyTitle = new QLabel("打开压缩包，轻松整理", hero);
+    auto* emptyTitle = new QLabel("文件收好，随时打开", hero);
     emptyTitle->setObjectName("emptyTitle");
-    emptyTitle->setProperty("i18n", "打开压缩包，轻松整理");
+    emptyTitle->setProperty("i18n", "文件收好，随时打开");
+    emptyTitle->setWordWrap(true);
     emptyTitle->setAttribute(Qt::WA_TransparentForMouseEvents);
     auto* emptyBody = new QLabel("拖入压缩包即可查看内容；拖入文件或文件夹即可创建压缩包。", hero);
     emptyBody->setObjectName("emptyBody");
@@ -938,9 +1083,14 @@ void MainWindow::buildUi() {
     auto* emptyButtons = new QHBoxLayout;
     emptyButtons->setSpacing(10);
     auto* emptyOpen = new QPushButton("打开压缩包", hero);
-    emptyOpen->setObjectName("primaryButton");
+    emptyOpen->setObjectName("homeOpen");
+    emptyOpen->setIcon(toolGlyph("打开"));
+    emptyOpen->setToolTip("Ctrl+O");
     emptyOpen->setProperty("i18n", "打开压缩包");
     auto* emptyNew = new QPushButton("新建压缩", hero);
+    emptyNew->setObjectName("homeNew");
+    emptyNew->setIcon(toolGlyph("新建压缩", Qt::white));
+    emptyNew->setToolTip("Ctrl+N");
     emptyNew->setProperty("i18n", "新建压缩");
     emptyButtons->addWidget(emptyOpen);
     emptyButtons->addWidget(emptyNew);
@@ -953,7 +1103,8 @@ void MainWindow::buildUi() {
     heroCopy->addLayout(emptyButtons);
     heroCopy->addStretch();
     heroLayout->addLayout(heroCopy, 1);
-    heroLayout->addWidget(new EmptyIllustration(hero));
+    auto* illustration = new EmptyIllustration(hero);
+    heroLayout->addWidget(illustration);
     emptyLayout->addWidget(hero, 0, Qt::AlignHCenter);
     m_recentSection = new QWidget(empty);
     m_recentSection->setMaximumWidth(820);
@@ -973,14 +1124,29 @@ void MainWindow::buildUi() {
     recentHeading->addWidget(clearRecent);
     recentLayout->addLayout(recentHeading);
     m_recentList = new QListWidget(m_recentSection);
+    m_recentList->setItemDelegate(new RecentArchiveDelegate(m_recentList));
+    m_recentList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_recentList->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     m_recentList->setObjectName("recentArchives");
     m_recentList->setFixedHeight(40);
     recentLayout->addWidget(m_recentList);
     emptyLayout->addWidget(m_recentSection, 0, Qt::AlignHCenter);
+    auto* homeHint = new QLabel("支持 ZIP / 7z / RAR 浏览与解压 · ZIP / 7z 创建", empty);
+    homeHint->setObjectName("homeHint");
+    homeHint->setProperty("i18n", "支持 ZIP / 7z / RAR 浏览与解压 · ZIP / 7z 创建");
+    homeHint->setAlignment(Qt::AlignCenter);
+    homeHint->setWordWrap(true);
+    emptyLayout->addWidget(homeHint);
     emptyLayout->addStretch(1);
-    empty->onResize = [hero, this](int width) {
+    auto* homeScroll = new HomeScrollArea;
+    homeScroll->onWidthChanged = [hero, illustration, homeHint, emptyLayout, this](int width) {
         const int contentWidth = std::max(0, std::min(820, width - 56));
         hero->setFixedWidth(contentWidth);
+        illustration->setVisible(width >= 820);
+        hero->setMinimumHeight(width < 820 ? 190 : 230);
+        homeHint->setVisible(width >= 820);
+        emptyLayout->setSpacing(width < 820 ? 12 : 20);
+        emptyLayout->setContentsMargins(28, width < 820 ? 18 : 24, 28, width < 820 ? 12 : 20);
         m_recentSection->setFixedWidth(contentWidth);
     };
     connect(m_recentList, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem* item) {
@@ -999,7 +1165,12 @@ void MainWindow::buildUi() {
     refreshRecentArchives();
     connect(emptyOpen, &QPushButton::clicked, this, &MainWindow::chooseAndOpen);
     connect(emptyNew, &QPushButton::clicked, this, [this]() { createArchive({}); });
-    m_emptyPage = empty;
+    homeScroll->setWidgetResizable(true);
+    homeScroll->setFrameShape(QFrame::NoFrame);
+    homeScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    homeScroll->setStyleSheet("QScrollArea { background: transparent; border: none; }");
+    homeScroll->setWidget(empty);
+    m_emptyPage = homeScroll;
 
     m_stack = new QStackedWidget(this);
     m_stack->addWidget(m_emptyPage);
@@ -1312,7 +1483,6 @@ void MainWindow::showArchive(zipdesk::ArchiveInfo info) {
     m_stack->setCurrentWidget(m_archivePage);
     const QString name = QFileInfo(QString::fromStdWString(m_path)).fileName();
     setWindowTitle(name + (zipdesk::uiLanguage() == zipdesk::UiLanguage::English ? " - QingXia" : " - 青匣"));
-    statusBar()->showMessage(QString("%1 项 · %2").arg(m_entries.size()).arg(zipdesk::translate("拖入文件可追加到压缩包")));
     updateActions();
 }
 
@@ -1329,9 +1499,10 @@ void MainWindow::refreshRecentArchives() {
         auto* item = new QListWidgetItem(QFileInfo(path).fileName(), m_recentList);
         item->setIcon(archiveItemGlyph(false));
         item->setData(Qt::UserRole, path);
+        item->setData(Qt::UserRole + 1, QDir::toNativeSeparators(QFileInfo(path).absolutePath()));
         item->setToolTip(QDir::toNativeSeparators(path));
     }
-    m_recentList->setFixedHeight(std::min(m_recentList->count(), 3) * 32 + 8);
+    m_recentList->setFixedHeight(std::min(m_recentList->count(), 2) * 62 + 10);
     m_recentSection->setVisible(m_recentList->count() > 0);
 }
 
@@ -1404,13 +1575,23 @@ void MainWindow::fillModel() {
     }
     m_model->setRows(std::move(rows));
     m_table->setSortingEnabled(true);
+    m_fileStack->setCurrentIndex(m_model->rowCount() == 0 ? 1 : 0);
+    m_emptyResultTitle->setText(zipdesk::translate(query.isEmpty() ? "压缩包里还没有文件" : "没有找到匹配的文件"));
+    m_emptyResultBody->setText(zipdesk::translate(query.isEmpty()
+        ? "添加文件，或将文件拖入窗口。" : "试试更短的关键词，或清除搜索查看全部内容。"));
+    m_clearSearchButton->setVisible(!query.isEmpty());
+    quint64 totalSize = 0;
+    for (const auto& entry : m_entries) if (!entry.isDir) totalSize += entry.size;
+    const QString format = QFileInfo(QString::fromStdWString(m_path)).suffix().toUpper();
+    m_archiveSummary->setText(QString("%1  ·  %2  ·  %3")
+        .arg(format, zipdesk::translate("%1 项").arg(m_entries.size()), humanSize(totalSize)));
     if (!m_path.empty()) {
         statusBar()->showMessage(query.isEmpty()
-            ? QString("当前显示 %1 项 · 压缩包共 %2 项 · %3")
+            ? zipdesk::translate("当前显示 %1 项 · 压缩包共 %2 项 · %3")
                   .arg(m_model->rowCount() - (m_prefix.empty() ? 0 : 1))
                   .arg(m_entries.size())
                   .arg(zipdesk::translate("拖入文件可追加到压缩包"))
-            : QString("找到 %1 项").arg(m_model->rowCount()));
+            : zipdesk::translate("找到 %1 项").arg(m_model->rowCount()));
     }
 }
 
@@ -1418,7 +1599,8 @@ void MainWindow::updateLocationBar() {
     const QString name = QFileInfo(QString::fromStdWString(m_path)).fileName();
     const QString folder = QString::fromStdWString(m_prefix).replace('/', "  ›  ");
     m_locationLabel->setText(folder.isEmpty() ? name : name + "  ›  " + folder);
-    m_locationLabel->setToolTip(QString::fromStdWString(m_prefix));
+    m_locationLabel->setToolTip(QDir::toNativeSeparators(QString::fromStdWString(m_path))
+        + (m_prefix.empty() ? QString() : "\n" + QString::fromStdWString(m_prefix)));
     m_upButton->setEnabled(!m_prefix.empty());
 }
 
@@ -1830,7 +2012,8 @@ void MainWindow::applyLanguage() {
     setWindowTitle(m_path.empty() ? appName : QFileInfo(QString::fromStdWString(m_path)).fileName() + " - " + appName);
     m_upButton->setToolTip(zipdesk::translate("上一级") + " (Alt+↑)");
     m_searchEdit->setPlaceholderText(zipdesk::uiLanguage() == zipdesk::UiLanguage::English
-        ? "Search files or paths…" : "搜索文件或路径…");
+        ? "Search archive · Ctrl+F" : "搜索整个压缩包 · Ctrl+F");
+    m_searchEdit->setAccessibleName(zipdesk::translate("搜索整个压缩包"));
     if (m_pinButton != nullptr) {
         m_pinButton->setToolTip(zipdesk::translate(m_stayOnTop ? "取消钉住" : "钉在前台"));
     }
@@ -1841,6 +2024,7 @@ void MainWindow::applyLanguage() {
         }
     }
     updateCaptionButtons();
+    if (!m_path.empty()) fillModel();
 }
 
 void MainWindow::appendPaths(const QStringList& paths) {

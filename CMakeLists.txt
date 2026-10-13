@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(ZipDesk VERSION 0.1.0 LANGUAGES CXX)
+project(ZipDesk VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -78,6 +78,11 @@ qt_add_executable(ZipDesk WIN32
     resources/app.rc
 )
 target_include_directories(ZipDesk PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/resources")
+target_compile_definitions(ZipDesk PRIVATE
+    ZIPDESK_VERSION="${PROJECT_VERSION}"
+    ZIPDESK_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+    ZIPDESK_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+    ZIPDESK_VERSION_PATCH=${PROJECT_VERSION_PATCH})
 qt_add_resources(ZipDesk app_assets
     PREFIX "/assets"
     BASE "${CMAKE_CURRENT_SOURCE_DIR}/resources"

@@ -15,25 +15,37 @@ ProgressDialog::ProgressDialog(QWidget* parent)
     setModal(false);
     setMinimumWidth(440);
     setStyleSheet(
-        "QDialog { background: #f3efe6; }"
-        "QLabel { color: #1f2430; }"
-        "QProgressBar { border: none; background: #efe6da; border-radius: 5px; min-height: 8px; }"
-        "QProgressBar::chunk { background: #0f6e6b; border-radius: 5px; }"
-        "QPushButton { background: #fffdf8; border: 1px solid #e4d8c8; border-radius: 10px; padding: 8px 16px; }");
+        "QDialog { background: #f5f7fa; color: #20332f; }"
+        "QLabel { color: #20332f; }"
+        "QLabel#currentFile { font-size: 13px; font-weight: 600; }"
+        "QLabel#progressPercent { color: #667b75; font-size: 12px; }"
+        "QProgressBar { border: 1px solid #dfe7e4; background: #ffffff; border-radius: 5px; min-height: 10px; }"
+        "QProgressBar::chunk { background: #147d70; border-radius: 4px; }"
+        "QPushButton { background: #ffffff; color: #20332f; border: 1px solid #dfe7e4; border-radius: 8px; padding: 8px 18px; }"
+        "QPushButton:hover { background: #edf6f2; border-color: #8cbbae; }"
+        "QPushButton:focus { background: #edf6f2; border: 2px solid #147d70; padding: 7px 17px; }"
+        "QPushButton:pressed { background: #dcefe7; }"
+        "QPushButton:disabled { background: #f5f7fa; color: #667b75; border-color: #dfe7e4; }");
     setWindowFlag(Qt::WindowContextHelpButtonHint, false);
 
     m_file = new QLabel("准备中…", this);
+    m_file->setObjectName("currentFile");
     m_percent = new QLabel("0%", this);
+    m_percent->setObjectName("progressPercent");
     m_percent->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     m_bar = new QProgressBar(this);
     m_bar->setRange(0, 0);
     m_bar->setTextVisible(false);
     m_cancel = new QPushButton("取消", this);
+    m_cancel->setMinimumWidth(96);
 
     auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(24, 24, 24, 20);
+    layout->setSpacing(12);
     layout->addWidget(m_file);
     layout->addWidget(m_percent);
     layout->addWidget(m_bar);
+    layout->addSpacing(6);
     layout->addWidget(m_cancel, 0, Qt::AlignRight);
     connect(m_cancel, &QPushButton::clicked, this, &ProgressDialog::requestCancel);
 }

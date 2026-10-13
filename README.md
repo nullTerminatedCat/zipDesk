@@ -2,13 +2,15 @@
 
 一个面向 Windows 的轻量压缩文件管理器。打开压缩包、查看内容、按需解压，也可以通过拖放或资源管理器右键菜单创建压缩包。
 
-> 当前为 **0.1.0 预览版本**。可从 [GitHub Releases](https://github.com/nullTerminatedCat/zipDesk/releases/tag/v0.1.0) 下载 Windows x64 安装包或免安装 ZIP；功能和界面仍在完善。
+> 当前为 **0.2.0 预览版本**。可从 [GitHub Releases](https://github.com/nullTerminatedCat/zipDesk/releases/tag/v0.2.0) 下载 Windows x64 / x86 安装包或免安装 ZIP；两种架构使用相同版本源码。功能和界面仍在完善。
 
 ![青匣主页](docs/screenshots/home.png)
 
 ![压缩包浏览界面](docs/screenshots/archive.png)
 
 以下功能描述以当前源码为准，已发布二进制的功能以对应 Release 说明为准。
+
+本轮界面优化及后续安排见 [体验优化方案](docs/UX_ROUND1.md)，版本变化见 [v0.2.0 更新说明](docs/RELEASE_0.2.0.md)。
 
 ## 功能
 
@@ -29,7 +31,7 @@
 
 ## 获取与使用
 
-在 [Release 页面](https://github.com/nullTerminatedCat/zipDesk/releases/tag/v0.1.0) 下载 `setup.exe` 安装包，或完整解压 `portable.zip` 后运行 `ZipDesk.exe`。两种包均包含 Qt、7-Zip 和 Visual C++ 运行库，另附 SHA-256 校验文件。程序未做代码签名。
+在 [Release 页面](https://github.com/nullTerminatedCat/zipDesk/releases/tag/v0.2.0) 下载 `setup.exe` 安装包，或完整解压 `portable.zip` 后运行 `ZipDesk.exe`。两种包均包含 Qt、7-Zip 和 Visual C++ 运行库，另附 SHA-256 校验文件。程序未做代码签名。
 
 启动后，可以拖入 ZIP、7z、RAR 查看内容，或拖入普通文件和文件夹创建压缩包。打开压缩包后，工具栏提供解压、添加和完整性测试等操作。也可以按下文从源码构建。
 
@@ -81,6 +83,8 @@ build\ZipDesk.exe
 
 ### 运行测试
 
+需要 32 位构建时，参见 [Windows x86 构建说明](docs/BUILD_X86.md)。该配置使用自行编译的 Qt，依赖和构建目录均与 x64 分开。
+
 构建后在仓库根目录运行全部测试：
 
 ```bat
@@ -97,7 +101,7 @@ ctest --test-dir build --output-on-failure
 .\scripts\package.ps1 -RuntimeDirectory "C:\Path\To\VC\Redist\MSVC\14.xx\x64\Microsoft.VC143.CRT" -Iscc "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 ```
 
-脚本按白名单收集程序及运行库，加入第三方许可和源提交信息，在 `dist` 生成安装包、免安装 ZIP 和 `SHA256SUMS.txt`。测试程序、构建缓存和本地日志不进入发布包。
+脚本按白名单收集程序及运行库，加入第三方许可和源提交信息，在 `dist` 生成安装包、免安装 ZIP 和带版本/架构后缀的 SHA-256 校验文件。Release 中的 `SHA256SUMS.txt` 汇总两种架构。测试程序、构建缓存和本地日志不进入发布包。
 
 ## 命令行
 
@@ -122,7 +126,7 @@ build\ZipDesk.exe a result.7z file1.txt folder
 
 ## 已知限制
 
-- 仅面向 Windows x64；RAR 只支持打开和解压。
+- 面向 Windows，主要发布配置为 x64，x86 使用自行编译的 Qt；RAR 只支持打开和解压。
 - “抢救可读取文件”依赖能够先读取压缩包目录，不能修复所有损坏情况。
 - ZIP 密码目前只接受 ASCII 字符；英文界面尚有未翻译文案。
 - 解压失败或取消时，目标目录可能保留已写入的部分文件；已经覆盖的文件不会自动恢复。

@@ -13,15 +13,19 @@
 #include <QDialog>
 #include <QDataStream>
 #include <QDir>
+#include <QDragEnterEvent>
+#include <QDragLeaveEvent>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFrame>
 #include <QItemSelectionModel>
 #include <QListWidget>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QAbstractButton>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -31,6 +35,7 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolButton>
+#include <QUrl>
 #include <QtTest/QTest>
 
 #include <iostream>
@@ -451,7 +456,20 @@ int main(int argc, char* argv[]) {
         std::cerr << "FAIL: archive-wide search did not find root file\n";
         return 1;
     }
-    search->clear();
+    window.activateWindow();
+    QTest::qWait(40);
+    table->setFocus();
+    QTest::keyClick(table, Qt::Key_F, Qt::ControlModifier);
+    if (!search->hasFocus() || search->selectedText() != "second") {
+        std::cerr << "FAIL: Ctrl+F did not focus and select the archive query\n";
+        return 1;
+    }
+    QTest::keyClick(search, Qt::Key_Escape);
+    if (!search->text().isEmpty() || !search->hasFocus() ||
+        table->model()->rowCount() != 2 || !up->isEnabled()) {
+        std::cerr << "FAIL: Escape did not clear search and restore the current directory\n";
+        return 1;
+    }
     QTest::mouseClick(up, Qt::LeftButton);
     if (table->model()->rowCount() != 3 || up->isEnabled()) {
         std::cerr << "FAIL: navigating up did not restore root\n";
@@ -464,6 +482,44 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     search->clear();
+
+    auto* emptyState = window.findChild<QWidget*>("archiveEmptyState");
+    auto* clearSearch = window.findChild<QPushButton*>("clearArchiveSearch");
+    search->setText("no-such-archive-item");
+    QTest::qWait(40);
+    if (!emptyState || !emptyState->isVisible() || !clearSearch ||
+        !clearSearch->isVisible() || table->isVisible() || table->model()->rowCount() != 0) {
+        std::cerr << "FAIL: an unmatched query did not show the search empty state\n";
+        return 1;
+    }
+    if (qEnvironmentVariableIsSet("ZIPDESK_UI_CAPTURE")) {
+        window.grab().save(QDir::current().filePath("build/ui-search-empty.png"));
+    }
+    QMimeData draggedFile;
+    draggedFile.setUrls({QUrl::fromLocalFile(source.fileName())});
+    QDragEnterEvent dragEnter(QPoint(20, 20), Qt::CopyAction, &draggedFile,
+        Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(emptyState, &dragEnter);
+    QDragLeaveEvent dragLeave;
+    QApplication::sendEvent(emptyState, &dragLeave);
+    if (!dragEnter.isAccepted()) {
+        std::cerr << "FAIL: the search empty state does not accept an external file drag\n";
+        return 1;
+    }
+    QTest::mouseClick(clearSearch, Qt::LeftButton);
+    QTest::qWait(40);
+    if (!search->text().isEmpty() || emptyState->isVisible() ||
+        !table->isVisible() || table->model()->rowCount() != 3) {
+        std::cerr << "FAIL: clearing the empty-state query did not restore archive rows\n";
+        return 1;
+    }
+    window.resize(720, 520);
+    QTest::qWait(40);
+    if (qEnvironmentVariableIsSet("ZIPDESK_UI_CAPTURE")) {
+        window.grab().save(QDir::current().filePath("build/ui-archive-small.png"));
+    }
+    window.resize(960, 600);
+    QTest::qWait(40);
 
     preview->setChecked(true);
     auto* previewText = window.findChild<QPlainTextEdit*>();
@@ -564,11 +620,19 @@ int main(int argc, char* argv[]) {
     }
 
     QTest::mouseClick(back, Qt::LeftButton);
+    QTest::qWait(40);
     auto* recent = window.findChild<QListWidget*>("recentArchives");
     if (!button("打开")->isVisible() || !button("新建压缩")->isVisible() ||
         !button("解压")->isVisible() || more->isVisible() ||
         !recent || recent->count() != 1 || !recent->isVisible()) {
         std::cerr << "FAIL: home toolbar state is incorrect\n";
+        return 1;
+    }
+    if (QDir::fromNativeSeparators(recent->item(0)->data(Qt::UserRole).toString()) !=
+            QDir::fromNativeSeparators(QString::fromStdWString(request.outputPath)) ||
+        QDir::fromNativeSeparators(recent->item(0)->data(Qt::UserRole + 1).toString()) !=
+            QFileInfo(QString::fromStdWString(request.outputPath)).absolutePath()) {
+        std::cerr << "FAIL: recent archive lost its full path or directory label\n";
         return 1;
     }
     if (qEnvironmentVariableIsSet("ZIPDESK_UI_CAPTURE")) {
@@ -578,8 +642,15 @@ int main(int argc, char* argv[]) {
     window.resize(720, 520);
     QTest::qWait(40);
     if (!hero || hero->width() > hero->parentWidget()->width() ||
-        recent->parentWidget()->width() > recent->parentWidget()->parentWidget()->width()) {
+        recent->parentWidget()->width() > recent->parentWidget()->parentWidget()->width() ||
+        hero->mapTo(&window, QPoint(hero->width(), 0)).x() > window.width() ||
+        recent->parentWidget()->mapTo(&window, QPoint(recent->parentWidget()->width(), 0)).x() > window.width()) {
         std::cerr << "FAIL: home layout overflows at minimum window size\n";
+        return 1;
+    }
+    if (hero->mapTo(&window, QPoint(0, hero->height())).y() >
+        recent->parentWidget()->mapTo(&window, QPoint()).y()) {
+        std::cerr << "FAIL: home hero overlaps recent archives at minimum window size\n";
         return 1;
     }
     if (qEnvironmentVariableIsSet("ZIPDESK_UI_CAPTURE")) {
@@ -614,6 +685,35 @@ int main(int argc, char* argv[]) {
     if (recent->count() != 0 || recent->isVisible()) {
         std::cerr << "FAIL: recent archive history was not cleared\n";
         return 1;
+    }
+    {
+        const QString longZip = QDir(temporary.path()).filePath(
+            "a-very-long-archive-name-to-check-that-the-location-bar-stays-usable-in-a-small-window.zip");
+        if (!QFile::copy(QString::fromStdWString(request.outputPath), longZip)) {
+            std::cerr << "FAIL: cannot create long archive-name fixture\n";
+            return 1;
+        }
+        zipdesk::LaunchCommand longLaunch;
+        longLaunch.action = zipdesk::LaunchAction::Open;
+        longLaunch.paths = {longZip.toStdWString()};
+        MainWindow longWindow(service, longLaunch);
+        longWindow.resize(720, 520);
+        longWindow.show();
+        auto* longTable = longWindow.findChild<QTableView*>();
+        auto* longSearch = longWindow.findChild<QLineEdit*>("archiveSearch");
+        timer.restart();
+        while (longTable && longTable->model()->rowCount() != 3 && timer.elapsed() < 5000)
+            QTest::qWait(20);
+        QTest::qWait(40);
+        if (!longTable || longTable->model()->rowCount() != 3 || !longSearch ||
+            longWindow.size() != QSize(720, 520) ||
+            !longWindow.rect().contains(QRect(longSearch->mapTo(&longWindow, QPoint()), longSearch->size()))) {
+            std::cerr << "FAIL: a long archive name expanded the minimum window or clipped search\n";
+            return 1;
+        }
+        if (qEnvironmentVariableIsSet("ZIPDESK_UI_CAPTURE")) {
+            longWindow.grab().save(QDir::current().filePath("build/ui-archive-long-name-small.png"));
+        }
     }
     const QString implicitZip = QDir(temporary.path()).filePath("implicit.zip");
     bit7z::Bit7zLibrary library(QDir(QCoreApplication::applicationDirPath()).filePath("7z.dll").toStdWString());

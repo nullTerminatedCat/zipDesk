@@ -14,6 +14,7 @@
 int main(int argc, char* argv[]) {
     QApplication application(argc, argv);
     QApplication::setApplicationName("ZipDesk");
+    QApplication::setApplicationVersion(ZIPDESK_VERSION);
     QApplication::setApplicationDisplayName("青匣");
     QApplication::setOrganizationName("ZipDesk");
 

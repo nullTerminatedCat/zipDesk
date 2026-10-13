@@ -139,6 +139,11 @@ private:
     std::shared_ptr<std::atomic_bool> m_previewCancel;
     quint64 m_previewGeneration = 0;
     QTableView* m_table = nullptr;
+    QStackedWidget* m_fileStack = nullptr;
+    QLabel* m_emptyResultTitle = nullptr;
+    QLabel* m_emptyResultBody = nullptr;
+    QWidget* m_clearSearchButton = nullptr;
+    QLabel* m_archiveSummary = nullptr;
     ArchiveListModel* m_model = nullptr;
     QWidget* m_emptyPage = nullptr;
     QWidget* m_recentSection = nullptr;

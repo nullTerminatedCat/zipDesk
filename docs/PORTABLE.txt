@@ -1,4 +1,4 @@
-青匣 QingXia 0.1.0（Windows x64 预览版）
+青匣 QingXia 0.2.0（Windows 预览版，架构见 BUILD.txt）
 
 将 ZIP 完整解压到一个目录，运行其中的 ZipDesk.exe。
 请保留 DLL、platforms 和其他子目录，不要只复制 EXE。
