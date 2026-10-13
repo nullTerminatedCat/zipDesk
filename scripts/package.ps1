@@ -46,7 +46,12 @@ foreach ($binary in (Get-ChildItem $payload -Recurse -File | Where-Object { $_.E
         $reader.BaseStream.Position = 0x3c
         $peOffset = $reader.ReadInt32()
         $reader.BaseStream.Position = $peOffset
-        if ($reader.ReadUInt32() -ne 0x00004550 -or $reader.ReadUInt16() -ne $expectedMachine) {
+        $signature = $reader.ReadUInt32()
+        $machine = $reader.ReadUInt16()
+        # Official 7-Zip may ship an x86 SFX stub even in its x64 distribution.
+        # It runs as a separate extractor, unlike DLLs loaded by the application.
+        $compatibleSfx = $Architecture -eq 'x64' -and $binary.Extension -eq '.sfx' -and $machine -eq 0x014c
+        if ($signature -ne 0x00004550 -or ($machine -ne $expectedMachine -and !$compatibleSfx)) {
             throw "Architecture mismatch: $($binary.FullName)"
         }
     } finally { $reader.Dispose() }
