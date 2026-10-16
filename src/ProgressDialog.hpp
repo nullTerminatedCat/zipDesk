@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QDialog>
+#include <QElapsedTimer>
 
 class QLabel;
 class QProgressBar;
@@ -27,7 +28,12 @@ protected:
 
 private:
     void requestCancel();
+    void updateMetrics();
 
+    QLabel* m_metrics = nullptr;
+    QElapsedTimer m_elapsed;
+    quint64 m_processed = 0;
+    qint64 m_lastProgressAt = 0;
     QLabel* m_file = nullptr;
     QLabel* m_percent = nullptr;
     QProgressBar* m_bar = nullptr;

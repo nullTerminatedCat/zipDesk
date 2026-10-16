@@ -143,6 +143,14 @@ bool testExtractResult(QApplication& app, const QString& root, const QString& sc
         }
         if (box->windowTitle() == "同名文件") {
             conflictSeen = true;
+            valid = valid && box->informativeText().contains("1 个同名项目") &&
+                box->detailedText().contains("sample.txt") &&
+                box->detailedText().contains("6 字节") &&
+                box->detailedText().contains("8 字节") &&
+                box->defaultButton() && box->defaultButton()->text() == "取消" &&
+                box->escapeButton() && box->escapeButton()->text() == "取消";
+            if (qEnvironmentVariableIsSet("ZIPDESK_UI_CAPTURE"))
+                box->grab().save(QDir(QCoreApplication::applicationDirPath()).filePath("ui-conflict-preview.png"));
             const QString choice = mode == "skip" ? "全部跳过" : "取消";
             if (mode == "cancel")
                 valid = write(QDir(output).filePath("user.txt"), "user") && valid;

@@ -69,6 +69,7 @@ CompressDialog::CompressDialog(QWidget* parent)
     setWindowTitle("新建压缩");
     setMinimumWidth(560);
     setStyleSheet(
+        "QWidget:focus{outline: none;}"
         "QDialog { background: #f4f8f7; color: #203b37; }"
         "QLabel#dialogTitle { color: #193b35; font-size: 19px; font-weight: 700; }"
         "QLabel#dialogHint { color: #70847d; font-size: 11px; }"

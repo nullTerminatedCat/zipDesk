@@ -678,6 +678,7 @@ void MainWindow::buildUi() {
     setFont(QFont("Microsoft YaHei UI", 9));
     resize(980, 680);
     setStyleSheet(
+        "QWidget:focus{outline: none;}"
         "QWidget { font-size: 13px; }"
         "QLabel#dropHint { background: rgba(22, 116, 104, 0.14); color: #0f6e6b; border: 2px dashed #167468; "
         "border-radius: 16px; font-size: 18px; font-weight: 700; margin: 18px; }"
@@ -1048,7 +1049,7 @@ void MainWindow::buildUi() {
 
     auto* empty = new DropLabel;
     empty->setObjectName("homeSurface");
-    empty->setStyleSheet("QLabel#homeSurface { background: #f5f7fa; }");
+    empty->setStyleSheet("QWidget:focus{outline: none;}QLabel#homeSurface { background: #f5f7fa; }");
     empty->setAcceptDrops(true);
     empty->onDrop = [this](const QList<QUrl>& urls) { handleDropped(urls); };
     empty->onDragActive = [this](bool active) { showDropHint(active); };
@@ -1168,7 +1169,7 @@ void MainWindow::buildUi() {
     homeScroll->setWidgetResizable(true);
     homeScroll->setFrameShape(QFrame::NoFrame);
     homeScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    homeScroll->setStyleSheet("QScrollArea { background: transparent; border: none; }");
+    homeScroll->setStyleSheet("QWidget:focus{outline: none;}QScrollArea { background: transparent; border: none; }");
     homeScroll->setWidget(empty);
     m_emptyPage = homeScroll;
 
@@ -1738,14 +1739,37 @@ std::optional<QString> MainWindow::promptPassword(const QString& text) {
     return dialog.textValue();
 }
 
-std::optional<zipdesk::OverwritePolicy> MainWindow::askOverwrite(bool allowSkip) {
+std::optional<zipdesk::OverwritePolicy> MainWindow::askOverwrite(const std::vector<zipdesk::ArchiveEntry>& entries,
+    const std::vector<std::uint32_t>& indices, const std::wstring& outputDir, bool allowSkip) {
     QMessageBox box(m_progress->isVisible() ? static_cast<QWidget*>(m_progress) : static_cast<QWidget*>(this));
     box.setIcon(QMessageBox::Question);
     box.setWindowTitle("同名文件");
+    box.setTextFormat(Qt::PlainText);
+    QStringList details;
+    int conflicts = 0;
+    for (const auto& entry : entries) {
+        if (entry.isDir || entry.path.empty() ||
+            (!indices.empty() && std::find(indices.begin(), indices.end(), entry.index) == indices.end())) continue;
+        const QFileInfo target(QDir(QString::fromStdWString(outputDir)).filePath(QString::fromStdWString(entry.path)));
+        if (!target.exists()) continue;
+        ++conflicts;
+        if (details.size() < 100) {
+            details << QString("%1\n  压缩包内：%2 字节；目标：%3")
+                .arg(QString::fromStdWString(entry.path))
+                .arg(entry.size)
+                .arg(target.isDir() ? QString("文件夹") : QString::number(target.size()) + " 字节");
+        }
+    }
+    box.setInformativeText(QString("检测到 %1 个同名项目。\n目标目录：%2\n覆盖会替换目标内容，无法自动撤销。")
+        .arg(conflicts).arg(QDir::toNativeSeparators(QString::fromStdWString(outputDir))));
+    if (conflicts > details.size()) details << QString("仅展示前 100 项，共 %1 项。").arg(conflicts);
+    if (!details.isEmpty()) box.setDetailedText(details.join("\n\n"));
     box.setText(allowSkip ? "目标位置已有同名文件。这一批要如何处理？" : "目标位置已有同名文件。移动前必须完整解压，是否覆盖目标文件？");
     auto* overwrite = box.addButton("全部覆盖", QMessageBox::AcceptRole);
     auto* skip = allowSkip ? box.addButton("全部跳过", QMessageBox::ActionRole) : nullptr;
-    box.addButton("取消", QMessageBox::RejectRole);
+    auto* cancel = box.addButton("取消", QMessageBox::RejectRole);
+    box.setDefaultButton(cancel);
+    box.setEscapeButton(cancel);
     box.exec();
     if (box.clickedButton() == overwrite) {
         return zipdesk::OverwritePolicy::Overwrite;
@@ -2082,7 +2106,7 @@ void MainWindow::extractArchive(bool selectedOnly, bool namedFolder) {
                 if (zipdesk::hasConflicts(info.entries, {}, outputDir)) {
                     std::optional<zipdesk::OverwritePolicy> choice;
                     QMetaObject::invokeMethod(
-                        this, [&]() { choice = askOverwrite(); }, Qt::BlockingQueuedConnection);
+                        this, [&]() { choice = askOverwrite(info.entries, {}, outputDir); }, Qt::BlockingQueuedConnection);
                     if (!choice) {
                         if (created) {
                             std::error_code error;
@@ -2141,7 +2165,7 @@ void MainWindow::extractArchive(bool selectedOnly, bool namedFolder) {
 
     zipdesk::OverwritePolicy policy = zipdesk::OverwritePolicy::Overwrite;
     if (zipdesk::hasConflicts(m_entries, indices, outputDir)) {
-        const auto choice = askOverwrite();
+        const auto choice = askOverwrite(m_entries, indices, outputDir);
         if (!choice) {
             if (removeOnCancel) {
                 std::error_code error;
@@ -2189,7 +2213,7 @@ void MainWindow::smartExtract(const QString& path) {
             auto policy = zipdesk::OverwritePolicy::Overwrite;
             if (zipdesk::hasConflicts(info.entries, {}, destination.outputDir)) {
                 std::optional<zipdesk::OverwritePolicy> choice;
-                QMetaObject::invokeMethod(this, [&]() { choice = askOverwrite(); },
+                QMetaObject::invokeMethod(this, [&]() { choice = askOverwrite(info.entries, {}, destination.outputDir); },
                                           Qt::BlockingQueuedConnection);
                 if (!choice) {
                     if (created) {
@@ -2239,7 +2263,7 @@ void MainWindow::shellExtract(bool namedFolder) {
             if (zipdesk::hasConflicts(info.entries, {}, outputDir)) {
                 std::optional<zipdesk::OverwritePolicy> choice;
                 QMetaObject::invokeMethod(
-                    this, [&]() { choice = askOverwrite(); }, Qt::BlockingQueuedConnection);
+                    this, [&]() { choice = askOverwrite(info.entries, {}, outputDir); }, Qt::BlockingQueuedConnection);
                 if (!choice) {
                     if (created) {
                         std::error_code error;

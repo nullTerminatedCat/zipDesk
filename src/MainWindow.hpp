@@ -80,7 +80,8 @@ private:
     void onFailed(const QString& message);
     void onCancelled();
     std::optional<QString> promptPassword(const QString& text);
-    std::optional<zipdesk::OverwritePolicy> askOverwrite(bool allowSkip = true);
+    std::optional<zipdesk::OverwritePolicy> askOverwrite(const std::vector<zipdesk::ArchiveEntry>& entries,
+        const std::vector<std::uint32_t>& indices, const std::wstring& outputDir, bool allowSkip = true);
     std::vector<std::uint32_t> selectedIndices() const;
     QStringList selectedTopLevelPaths() const;
     void storePending(zipdesk::ArchiveInfo info);

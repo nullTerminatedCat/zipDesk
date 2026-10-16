@@ -290,7 +290,7 @@ void MainWindow::extractEntries(const std::vector<zipdesk::ArchiveEntry>& entrie
         }
     }
     if (checkConflicts && zipdesk::hasConflicts(m_entries, request.indices, request.outputDir)) {
-        const auto choice = askOverwrite(allowSkip);
+        const auto choice = askOverwrite(m_entries, request.indices, request.outputDir, allowSkip);
         if (!choice) {
             return;
         }
@@ -649,7 +649,7 @@ void MainWindow::moveSelectedTo() {
         request.indices.push_back(entry.index);
     }
     const auto expanded = zipdesk::expandSelection(m_entries, request.indices);
-    if (zipdesk::hasConflicts(m_entries, expanded, request.outputDir) && !askOverwrite(false)) return;
+    if (zipdesk::hasConflicts(m_entries, expanded, request.outputDir) && !askOverwrite(m_entries, expanded, request.outputDir, false)) return;
     m_extractOutputDir = directory;
     begin("正在移动",
         [this, request](const zipdesk::OperationHooks& hooks) { m_service.move(request, hooks); },
