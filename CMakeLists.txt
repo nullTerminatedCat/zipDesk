@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(ZipDesk VERSION 0.2.0 LANGUAGES CXX)
+project(ZipDesk VERSION 0.2.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -126,6 +126,10 @@ endif()
 zipdesk_copy_7z(zipdesk_smoke)
 
 if(TARGET Qt6::Test)
+    add_executable(zipdesk_progress_smoke tests/progress_smoke.cpp src/ProgressDialog.cpp src/ProgressDialog.hpp)
+    target_include_directories(zipdesk_progress_smoke PRIVATE src)
+    target_link_libraries(zipdesk_progress_smoke PRIVATE Qt6::Widgets Qt6::Test)
+
     add_executable(zipdesk_ui_smoke
         tests/ui_smoke.cpp
         src/CompressDialog.cpp
@@ -179,6 +183,7 @@ if(BUILD_TESTING)
                     $<TARGET_FILE:${target}> ${ARGN})
         endfunction()
         zipdesk_add_ui_test(compression_dialog zipdesk_ui_smoke)
+        zipdesk_add_ui_test(progress_dialog zipdesk_progress_smoke)
         zipdesk_add_ui_test(archive_window zipdesk_main_ui_smoke)
         foreach(scenario IN ITEMS overwrite cancel failure decline)
             zipdesk_add_ui_test(move_${scenario} zipdesk_main_ui_smoke --move ${scenario})

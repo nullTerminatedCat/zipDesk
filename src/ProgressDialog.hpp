@@ -33,4 +33,5 @@ private:
     QProgressBar* m_bar = nullptr;
     QPushButton* m_cancel = nullptr;
     quint64 m_total = 0;
+    bool m_cancelRequested = false;
 };

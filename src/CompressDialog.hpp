@@ -45,6 +45,8 @@ private:
     void refreshOutput();
     void updateFormatOptions();
     void accept() override;
+    void showValidationError(const QString& message, QWidget* field);
+    void clearValidationError();
 
     QListWidget* m_files = nullptr;
     QComboBox* m_format = nullptr;
@@ -56,5 +58,7 @@ private:
     QLineEdit* m_confirm = nullptr;
     QLineEdit* m_output = nullptr;
     QLabel* m_fileCount = nullptr;
+    QLabel* m_validationError = nullptr;
+    QWidget* m_invalidField = nullptr;
     bool m_outputCustomized = false;
 };

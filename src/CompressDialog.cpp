@@ -16,7 +16,6 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
-#include <QMessageBox>
 #include <QPushButton>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -85,7 +84,9 @@ CompressDialog::CompressDialog(QWidget* parent)
         "QPushButton#primaryButton { background: #167468; color: white; border-color: #167468; font-weight: 600; }"
         "QPushButton#primaryButton:hover { background: #0e6258; border-color: #0e6258; }"
         "QToolButton#advancedToggle { color: #167468; background: transparent; border: none; padding: 5px 0; font-weight: 600; }"
-        "QCheckBox { color: #35534d; spacing: 7px; }");
+        "QCheckBox { color: #35534d; spacing: 7px; }"
+        "QLabel#validationError { color: #a52a32; padding: 6px 0; }"
+        "QLineEdit[invalid=\"true\"], QListWidget[invalid=\"true\"] { border: 1px solid #b64149; }");
 
     setAcceptDrops(true);
     m_files = new QListWidget(this);
@@ -129,9 +130,11 @@ CompressDialog::CompressDialog(QWidget* parent)
     m_sfx->setEnabled(false);
 
     m_password = new QLineEdit(this);
+    m_password->setObjectName("archivePassword");
     m_password->setEchoMode(QLineEdit::Password);
     m_password->setPlaceholderText("可留空");
     m_confirm = new QLineEdit(this);
+    m_confirm->setObjectName("confirmPassword");
     m_confirm->setEchoMode(QLineEdit::Password);
 
     m_output = new QLineEdit(this);
@@ -146,20 +149,22 @@ CompressDialog::CompressDialog(QWidget* parent)
     form->setVerticalSpacing(9);
     form->setHorizontalSpacing(14);
     form->addRow("格式", m_format);
-    form->addRow("压缩级别", m_level);
-    form->addRow("密码", m_password);
-    form->addRow("确认密码", m_confirm);
     form->addRow("将保存为", outputRow);
 
     auto* advancedButton = new QToolButton(this);
     advancedButton->setObjectName("advancedToggle");
-    advancedButton->setText("高级选项");
+    advancedButton->setText("高级选项（密码、压缩级别、分卷）");
     advancedButton->setCheckable(true);
     advancedButton->setArrowType(Qt::RightArrow);
     advancedButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     auto* advancedPanel = new QWidget(this);
+    advancedPanel->setObjectName("advancedPanel");
     auto* advancedLayout = new QFormLayout(advancedPanel);
     advancedLayout->setContentsMargins(0, 0, 0, 0);
+    advancedLayout->setVerticalSpacing(9);
+    advancedLayout->addRow("压缩级别", m_level);
+    advancedLayout->addRow("密码", m_password);
+    advancedLayout->addRow("确认密码", m_confirm);
     advancedLayout->addRow("分卷", m_volume);
     advancedLayout->addRow("", m_solid);
     advancedLayout->addRow("", m_sfx);
@@ -188,7 +193,17 @@ CompressDialog::CompressDialog(QWidget* parent)
     layout->addLayout(form);
     layout->addWidget(advancedButton);
     layout->addWidget(advancedPanel);
+    m_validationError = new QLabel(this);
+    m_validationError->setObjectName("validationError");
+    m_validationError->setTextFormat(Qt::PlainText);
+    m_validationError->setWordWrap(true);
+    m_validationError->hide();
+    layout->addWidget(m_validationError);
     layout->addWidget(buttons);
+    for (QLineEdit* field : {m_output, m_password, m_confirm}) {
+        connect(field, &QLineEdit::textChanged, this, &CompressDialog::clearValidationError);
+    }
+
 
     connect(addFileButton, &QPushButton::clicked, this, &CompressDialog::addFiles);
     connect(addFolderButton, &QPushButton::clicked, this, &CompressDialog::addFolder);
@@ -206,6 +221,7 @@ CompressDialog::CompressDialog(QWidget* parent)
 }
 
 void CompressDialog::setRequest(const zipdesk::CompressRequest& request) {
+    clearValidationError();
     m_files->clear();
     m_outputCustomized = !request.outputPath.empty();
     for (const std::wstring& input : request.inputs) {
@@ -224,6 +240,9 @@ void CompressDialog::setRequest(const zipdesk::CompressRequest& request) {
     m_volume->setCurrentIndex(std::max(0, m_volume->findData(static_cast<qulonglong>(request.volumeSize))));
     m_solid->setChecked(request.solid);
     m_sfx->setChecked(request.sfx);
+    findChild<QToolButton*>("advancedToggle")->setChecked(!request.password.empty() ||
+        request.volumeSize != 0 || request.solid || request.sfx ||
+        request.level != zipdesk::CompressionLevel::Normal);
     if (m_outputCustomized) {
         m_output->setText(QString::fromStdWString(request.outputPath));
     }
@@ -348,6 +367,7 @@ void CompressDialog::chooseOutput() {
 }
 
 void CompressDialog::updateFileCount() {
+    clearValidationError();
     m_fileCount->setText(QString("%1 项").arg(m_files->count()));
 }
 
@@ -373,6 +393,7 @@ void CompressDialog::refreshOutput() {
 }
 
 void CompressDialog::updateFormatOptions() {
+    clearValidationError();
     const bool sevenZip = static_cast<zipdesk::ArchiveFormat>(m_format->currentData().toInt()) == zipdesk::ArchiveFormat::SevenZip;
     m_solid->setEnabled(sevenZip);
     m_sfx->setEnabled(sevenZip);
@@ -383,27 +404,56 @@ void CompressDialog::updateFormatOptions() {
     refreshOutput();
 }
 
+void CompressDialog::clearValidationError() {
+    if (m_validationError) m_validationError->hide();
+    if (m_invalidField) {
+        m_invalidField->setProperty("invalid", false);
+        m_invalidField->style()->unpolish(m_invalidField);
+        m_invalidField->style()->polish(m_invalidField);
+        m_invalidField->update();
+        m_invalidField = nullptr;
+    }
+}
+
+void CompressDialog::showValidationError(const QString& message, QWidget* field) {
+    clearValidationError();
+    m_validationError->setText(message);
+    m_validationError->setBuddy(field);
+    m_validationError->show();
+    m_invalidField = field;
+    field->setProperty("invalid", true);
+    field->style()->unpolish(field);
+    field->style()->polish(field);
+    field->update();
+    field->setFocus();
+}
+
 void CompressDialog::accept() {
+    clearValidationError();
     if (m_files->count() == 0) {
-        QMessageBox::warning(this, "新建压缩", "请先添加文件或文件夹。");
+        showValidationError("请先添加文件或文件夹。", m_files);
         return;
     }
     if (m_output->text().trimmed().isEmpty()) {
-        QMessageBox::warning(this, "新建压缩", "无法确定保存位置。");
+        showValidationError("无法确定保存位置。", m_output);
         return;
     }
     if (m_password->text() != m_confirm->text()) {
-        QMessageBox::warning(this, "新建压缩", "两次输入的密码不一致。");
+        findChild<QToolButton*>("advancedToggle")->setChecked(true);
+        m_confirm->setFocus();
+        showValidationError("两次输入的密码不一致。", m_confirm);
         return;
     }
     const auto format = static_cast<zipdesk::ArchiveFormat>(m_format->currentData().toInt());
     if (format == zipdesk::ArchiveFormat::Zip && !m_password->text().isEmpty() && !isZipPassword(m_password->text())) {
-        QMessageBox::warning(this, "新建压缩", "ZIP 密码只能包含英文字符、数字和符号。7z 可以包含中文密码。");
+        findChild<QToolButton*>("advancedToggle")->setChecked(true);
+        m_password->setFocus();
+        showValidationError("ZIP 密码只能包含英文字符、数字和符号。7z 可以包含中文密码。", m_password);
         return;
     }
     QString path = m_output->text().trimmed();
     if (QFileInfo(path).fileName().isEmpty()) {
-        QMessageBox::warning(this, "新建压缩", "请填写压缩包文件名。");
+        showValidationError("请填写压缩包文件名。", m_output);
         return;
     }
     const QString extension = m_sfx->isChecked() ? QStringLiteral(".exe") : extensionFor(format);
