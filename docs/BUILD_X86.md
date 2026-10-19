@@ -54,7 +54,7 @@ ctest --test-dir build-x86 --output-on-failure
   -Iscc 'C:\Path\To\Inno Setup\ISCC.exe'
 ```
 
-产物为 `dist/QingXia-0.2.3-windows-x86-setup.exe`、`dist/QingXia-0.2.3-windows-x86-portable.zip` 和 `dist/SHA256SUMS-0.2.3-x86.txt`。脚本会检查所有 EXE、DLL、SFX 的 PE 架构，拒绝混入 x64 依赖；已有同名发布包不会被覆盖。
+产物为 `dist/QingXia-0.2.4-windows-x86-setup.exe`、`dist/QingXia-0.2.4-windows-x86-portable.zip` 和 `dist/SHA256SUMS-0.2.4-x86.txt`。脚本会检查所有 EXE、DLL、SFX 的 PE 架构，拒绝混入 x64 依赖；已有同名发布包不会被覆盖。
 
 ## 本地验证记录（2026-10-12）
 
