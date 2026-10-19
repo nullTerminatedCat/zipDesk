@@ -82,6 +82,11 @@ struct ExtractRequest {
 struct ExtractResult {
     // Relative paths (under outputDir) of files saved with a numbered name by KeepBoth.
     std::vector<std::wstring> keptCopies;
+    // Measured on disk after a successful extraction; directories are not counted.
+    std::size_t written = 0;            // files that did not exist before and exist now
+    std::size_t overwritten = 0;        // existing files replaced under Overwrite
+    std::vector<std::wstring> skipped;  // existing files left untouched under Skip
+    std::vector<std::wstring> missing;  // requested files still absent afterwards
 };
 
 struct CompressRequest {

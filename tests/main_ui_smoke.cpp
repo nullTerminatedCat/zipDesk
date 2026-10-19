@@ -169,6 +169,15 @@ bool testExtractResult(QApplication& app, const QString& root, const QString& sc
         valid = valid && box->windowTitle() == expectedTitle &&
             box->text().contains(QDir::toNativeSeparators(output));
         if (mode == "skip") valid = valid && box->text().contains("全部跳过");
+        if (mode == "success" || mode == "directory")
+            valid = valid && box->text().contains("共 2 个文件：新写入 2 个文件") && !box->text().contains("未找到");
+        if (mode == "skip")
+            valid = valid && box->text().contains("新写入 1 个文件") && box->text().contains("跳过 1 个同名文件") &&
+                box->detailedText().contains("跳过的同名文件") && box->detailedText().contains("sample.txt");
+        if (mode == "keep")
+            valid = valid && box->text().contains("新写入 1 个文件") && box->text().contains("另存 1 个同名文件");
+        if (mode == "skip" && qEnvironmentVariableIsSet("ZIPDESK_UI_CAPTURE"))
+            box->grab().save(QDir(QCoreApplication::applicationDirPath()).filePath("ui-extract-counts.png"));
         if (mode == "keep")
             valid = valid && box->text().contains("保留两者") && box->text().contains("sample (2).txt") &&
                 box->detailedText().contains("sample (2).txt");

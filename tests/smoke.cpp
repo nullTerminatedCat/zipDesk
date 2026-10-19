@@ -202,13 +202,31 @@ void testOverwriteAndCancel(zipdesk::ArchiveService& service, const fs::path& ro
     skip.outputDir = extracted.wstring();
     skip.indices = {helloIndex};
     skip.overwrite = zipdesk::OverwritePolicy::Skip;
-    service.extract(skip, {});
+    const zipdesk::ExtractResult skipResult = service.extract(skip, {});
     check(readFile(target) == "EXISTING", "skip keeps the existing file");
+    check(skipResult.skipped.size() == 1 && skipResult.skipped.front() == helloPath && skipResult.written == 0 &&
+              skipResult.overwritten == 0 && skipResult.missing.empty(),
+          "skip reports the untouched file");
 
     zipdesk::ExtractRequest overwrite = skip;
     overwrite.overwrite = zipdesk::OverwritePolicy::Overwrite;
-    service.extract(overwrite, {});
+    const zipdesk::ExtractResult overwriteResult = service.extract(overwrite, {});
     check(readFile(target) == "hello", "overwrite replaces the existing file");
+    check(overwriteResult.overwritten == 1 && overwriteResult.written == 0 && overwriteResult.skipped.empty() &&
+              overwriteResult.missing.empty(),
+          "overwrite reports the replaced file");
+
+    std::size_t fileCount = 0;
+    for (const zipdesk::ArchiveEntry& entry : info.entries) {
+        if (!entry.isDir) ++fileCount;
+    }
+    zipdesk::ExtractRequest freshAll;
+    freshAll.archivePath = archive.wstring();
+    freshAll.outputDir = (root / "fresh-count").wstring();
+    const zipdesk::ExtractResult freshResult = service.extract(freshAll, {});
+    check(fileCount > 0 && freshResult.written == fileCount && freshResult.overwritten == 0 &&
+              freshResult.skipped.empty() && freshResult.missing.empty(),
+          "fresh extraction counts every written file");
 
     writeFile(target, "EXISTING");
     zipdesk::ExtractRequest keepBoth = skip;
@@ -218,6 +236,8 @@ void testOverwriteAndCancel(zipdesk::ArchiveService& service, const fs::path& ro
     check(readFile(target) == "EXISTING", "keep both leaves the existing file untouched");
     check(keptOnce.keptCopies.size() == 1 && fs::path(keptOnce.keptCopies.front()).filename() == L"hello (2).txt",
           "keep both reports the numbered copy");
+    check(keptOnce.written == 0 && keptOnce.skipped.empty() && keptOnce.overwritten == 0 && keptOnce.missing.empty(),
+          "keep both does not report the saved copy as skipped");
     check(readFile(keptSecond) == "hello", "keep both writes the archive file beside the original");
     const zipdesk::ExtractResult keptTwice = service.extract(keepBoth, {});
     check(keptTwice.keptCopies.size() == 1 && readFile(target.parent_path() / L"hello (3).txt") == "hello" &&

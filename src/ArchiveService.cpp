@@ -629,8 +629,10 @@ ExtractResult ArchiveService::extract(const ExtractRequest& request, const Opera
         ExtractRequest first = request;
         first.password = info.password;
         first.overwrite = OverwritePolicy::Skip;
-        extract(first, hooks);
+        const ExtractResult firstPass = extract(first, hooks);
         ExtractResult result;
+        result.written = firstPass.written;
+        result.missing = firstPass.missing;
         if (conflictIndices.empty()) {
             return result;
         }
@@ -707,6 +709,42 @@ ExtractResult ArchiveService::extract(const ExtractRequest& request, const Opera
                                L"解压目标包含源压缩包自身，已停止以避免覆盖原压缩包。");
         }
     }
+    // Remember which files already existed so the result reports what was
+    // actually written, replaced or skipped instead of estimating it.
+    const fs::path outputRoot(current.outputDir);
+    std::vector<bool> existedBefore;
+    existedBefore.reserve(paths.size());
+    for (const std::wstring& path : paths) {
+        std::error_code error;
+        existedBefore.push_back(!path.empty() && fs::is_regular_file(outputRoot / path, error));
+    }
+    const auto summarize = [&]() {
+        ExtractResult result;
+        for (std::size_t i = 0; i < paths.size(); ++i) {
+            if (paths[i].empty()) {
+                continue;
+            }
+            if (existedBefore[i]) {
+                if (current.overwrite == OverwritePolicy::Skip) {
+                    result.skipped.push_back(paths[i]);
+                } else {
+                    ++result.overwritten;
+                }
+                continue;
+            }
+            std::error_code error;
+            const fs::file_status status = fs::symlink_status(outputRoot / paths[i], error);
+            if (fs::is_directory(status)) {
+                continue;
+            }
+            if (fs::exists(status)) {
+                ++result.written;
+            } else {
+                result.missing.push_back(paths[i]);
+            }
+        }
+        return result;
+    };
     for (int attempt = 0; attempt < 5; ++attempt) {
         try {
             const ArchiveFormat format = formatFromPath(current.archivePath);
@@ -723,7 +761,7 @@ ExtractResult ArchiveService::extract(const ExtractRequest& request, const Opera
             } else {
                 extractor.extractItems(current.archivePath, current.indices, current.outputDir);
             }
-            return {};
+            return summarize();
         } catch (const bit7z::BitException& error) {
             ArchiveError translated(ErrorKind::Other, L"");
             try {
