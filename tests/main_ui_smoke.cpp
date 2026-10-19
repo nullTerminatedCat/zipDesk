@@ -108,7 +108,7 @@ bool testExtractResult(QApplication& app, const QString& root, const QString& sc
     } else {
         service.compress(request, {});
     }
-    if (mode == "skip" || mode == "cancel") {
+    if (mode == "skip" || mode == "cancel" || mode == "keep") {
         if (!QDir().mkpath(output) || !write(target, "existing")) return false;
     } else if (mode == "failure") {
         if (!write(output, "keep")) return false;
@@ -151,7 +151,8 @@ bool testExtractResult(QApplication& app, const QString& root, const QString& sc
                 box->escapeButton() && box->escapeButton()->text() == "取消";
             if (qEnvironmentVariableIsSet("ZIPDESK_UI_CAPTURE"))
                 box->grab().save(QDir(QCoreApplication::applicationDirPath()).filePath("ui-conflict-preview.png"));
-            const QString choice = mode == "skip" ? "全部跳过" : "取消";
+            valid = valid && box->informativeText().contains("保留两者");
+            const QString choice = mode == "skip" ? "全部跳过" : mode == "keep" ? "保留两者" : "取消";
             if (mode == "cancel")
                 valid = write(QDir(output).filePath("user.txt"), "user") && valid;
             for (auto* button : box->buttons()) {
@@ -168,6 +169,11 @@ bool testExtractResult(QApplication& app, const QString& root, const QString& sc
         valid = valid && box->windowTitle() == expectedTitle &&
             box->text().contains(QDir::toNativeSeparators(output));
         if (mode == "skip") valid = valid && box->text().contains("全部跳过");
+        if (mode == "keep")
+            valid = valid && box->text().contains("保留两者") && box->text().contains("sample (2).txt") &&
+                box->detailedText().contains("sample (2).txt");
+        if (mode == "keep" && qEnvironmentVariableIsSet("ZIPDESK_UI_CAPTURE"))
+            box->grab().save(QDir(QCoreApplication::applicationDirPath()).filePath("ui-keep-both-result.png"));
         bool hasOpen = false;
         for (auto* button : box->buttons())
             if (button->text() == "打开目标文件夹") hasOpen = true;
@@ -192,13 +198,14 @@ bool testExtractResult(QApplication& app, const QString& root, const QString& sc
         return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
     };
     valid = valid && code == 0 && resultSeen &&
-        conflictSeen == (mode == "skip" || mode == "cancel");
+        conflictSeen == (mode == "skip" || mode == "cancel" || mode == "keep");
     if (mode == "failure") {
         valid = valid && read(output) == "keep";
     } else if (mode == "empty") {
         valid = valid && !QFile::exists(QDir(root).filePath("sample"));
     } else {
         valid = valid && read(target) == ((mode == "success" || mode == "directory") ? "sample" : "existing");
+        if (mode == "keep") valid = valid && read(QDir(output).filePath("sample (2).txt")) == "sample";
         if (mode == "cancel") {
             valid = valid && read(QDir(output).filePath("user.txt")) == "user" &&
                 !QFile::exists(QDir(output).filePath("fresh.txt"));

@@ -15,7 +15,9 @@ enum class ArchiveFormat : int { Zip, SevenZip, Rar };
 
 enum class CompressionLevel : int { Store, Fast, Normal, Maximum };
 
-enum class OverwritePolicy : int { Overwrite, Skip };
+// KeepBoth leaves existing files untouched and writes conflicting archive files
+// beside them with a numbered name such as "name (2).ext".
+enum class OverwritePolicy : int { Overwrite, Skip, KeepBoth };
 
 enum class ErrorKind : int { Password, Cancelled, InvalidPasswordCharset, Other };
 
@@ -77,6 +79,11 @@ struct ExtractRequest {
     bool removeOutputOnCancel = false;
 };
 
+struct ExtractResult {
+    // Relative paths (under outputDir) of files saved with a numbered name by KeepBoth.
+    std::vector<std::wstring> keptCopies;
+};
+
 struct CompressRequest {
     std::vector<std::wstring> inputs;
     std::wstring outputPath;
@@ -110,7 +117,7 @@ public:
     ArchiveService& operator=(const ArchiveService&) = delete;
 
     ArchiveInfo read(const std::wstring& archivePath, std::wstring password, const OperationHooks& hooks) const;
-    void extract(const ExtractRequest& request, const OperationHooks& hooks) const;
+    ExtractResult extract(const ExtractRequest& request, const OperationHooks& hooks) const;
     void move(const ExtractRequest& request, const OperationHooks& hooks) const;
     void compress(const CompressRequest& request, const OperationHooks& hooks) const;
     void append(const AppendRequest& request, const OperationHooks& hooks) const;
@@ -156,6 +163,9 @@ std::vector<std::uint32_t> expandSelection(const std::vector<ArchiveEntry>& entr
 bool hasConflicts(const std::vector<ArchiveEntry>& entries,
                   const std::vector<std::uint32_t>& indices,
                   const std::wstring& outputDir);
+// Returns a relative path beside relativePath that does not exist under outputDir,
+// e.g. "docs/a (2).txt". Only checks names; does not create anything.
+std::wstring keepBothName(const std::wstring& outputDir, const std::wstring& relativePath);
 struct SmartExtractDestination {
     std::wstring outputDir;
     std::wstring resultDir;

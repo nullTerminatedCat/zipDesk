@@ -588,9 +588,101 @@ ArchiveInfo ArchiveService::read(const std::wstring& archivePath,
     throw ArchiveError(ErrorKind::Password, L"密码不正确");
 }
 
-void ArchiveService::extract(const ExtractRequest& request, const OperationHooks& hooks) const {
+std::wstring keepBothName(const std::wstring& outputDir, const std::wstring& relativePath) {
+    const fs::path root(outputDir);
+    const fs::path relative(relativePath);
+    const fs::path parent = relative.parent_path();
+    const std::wstring stem = relative.stem().wstring();
+    const std::wstring extension = relative.extension().wstring();
+    for (int number = 2; number < 10000; ++number) {
+        const fs::path candidate = parent / (stem + L" (" + std::to_wstring(number) + L")" + extension);
+        std::error_code error;
+        if (!fs::exists(root / candidate, error) && !error) {
+            return candidate.wstring();
+        }
+    }
+    throw ArchiveError(ErrorKind::Other, L"无法为同名文件找到可用的新名称：" + relativePath);
+}
+
+ExtractResult ArchiveService::extract(const ExtractRequest& request, const OperationHooks& hooks) const {
     if (!fs::exists(request.archivePath)) {
         throw ArchiveError(ErrorKind::Other, L"找不到压缩包。");
+    }
+    if (request.overwrite == OverwritePolicy::KeepBoth) {
+        // Existing files are never opened for writing: non-conflicting items are
+        // extracted with Skip, conflicting ones go to a private staging folder and
+        // are then renamed beside the originals with a free numbered name.
+        const ArchiveInfo info = read(request.archivePath, request.password, hooks);
+        const fs::path root(request.outputDir);
+        std::vector<std::uint32_t> conflictIndices;
+        std::vector<std::wstring> conflictPaths;
+        for (const ArchiveEntry& entry : info.entries) {
+            if (entry.isDir || entry.path.empty() || !included(request.indices, entry.index)) {
+                continue;
+            }
+            std::error_code error;
+            if (fs::exists(root / entry.path, error)) {
+                conflictIndices.push_back(entry.index);
+                conflictPaths.push_back(entry.path);
+            }
+        }
+        ExtractRequest first = request;
+        first.password = info.password;
+        first.overwrite = OverwritePolicy::Skip;
+        extract(first, hooks);
+        ExtractResult result;
+        if (conflictIndices.empty()) {
+            return result;
+        }
+        if (hooks.cancel && hooks.cancel->load()) {
+            throw ArchiveError(ErrorKind::Cancelled, L"已取消");
+        }
+        fs::path staging;
+        const auto seed = static_cast<unsigned long long>(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+        for (int attempt = 0; attempt < 100 && staging.empty(); ++attempt) {
+            const fs::path candidate = root / (L".qingxia-keep-" + std::to_wstring(seed + attempt));
+            std::error_code error;
+            if (fs::create_directory(candidate, error) && !error) {
+                staging = candidate;
+            }
+        }
+        if (staging.empty()) {
+            throw ArchiveError(ErrorKind::Other, L"无法创建保留两者所需的临时文件夹。");
+        }
+        struct StagingGuard {
+            fs::path path;
+            ~StagingGuard() {
+                std::error_code error;
+                fs::remove_all(path, error);  // Private folder created above.
+            }
+        } guard{staging};
+        ExtractRequest second = first;
+        second.outputDir = staging.wstring();
+        second.indices = conflictIndices;
+        second.relativePaths = conflictPaths;
+        second.overwrite = OverwritePolicy::Overwrite;
+        second.removeOutputOnCancel = false;
+        extract(second, hooks);
+        for (const std::wstring& path : conflictPaths) {
+            if (hooks.cancel && hooks.cancel->load()) {
+                throw ArchiveError(ErrorKind::Cancelled, L"已取消");
+            }
+            const fs::path from = staging / path;
+            if (!fs::is_regular_file(from)) {
+                throw ArchiveError(ErrorKind::Other, L"未能写出同名文件的副本：" + path);
+            }
+            const std::wstring renamed = keepBothName(request.outputDir, path);
+            std::error_code error;
+            fs::create_directories((root / renamed).parent_path(), error);
+            error.clear();
+            fs::rename(from, root / renamed, error);
+            if (error) {
+                throw ArchiveError(ErrorKind::Other, L"无法保存同名文件的副本：" + renamed);
+            }
+            result.keptCopies.push_back(renamed);
+        }
+        return result;
     }
     ExtractRequest current = request;
     // The source archive must never become one of its own extracted outputs.
@@ -631,7 +723,7 @@ void ArchiveService::extract(const ExtractRequest& request, const OperationHooks
             } else {
                 extractor.extractItems(current.archivePath, current.indices, current.outputDir);
             }
-            return;
+            return {};
         } catch (const bit7z::BitException& error) {
             ArchiveError translated(ErrorKind::Other, L"");
             try {

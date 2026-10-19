@@ -1739,6 +1739,14 @@ std::optional<QString> MainWindow::promptPassword(const QString& text) {
     return dialog.textValue();
 }
 
+namespace {
+QStringList keptCopiesOf(const zipdesk::ExtractResult& result) {
+    QStringList paths;
+    for (const std::wstring& path : result.keptCopies) paths << QString::fromStdWString(path);
+    return paths;
+}
+}  // namespace
+
 std::optional<zipdesk::OverwritePolicy> MainWindow::askOverwrite(const std::vector<zipdesk::ArchiveEntry>& entries,
     const std::vector<std::uint32_t>& indices, const std::wstring& outputDir, bool allowSkip) {
     QMessageBox box(m_progress->isVisible() ? static_cast<QWidget*>(m_progress) : static_cast<QWidget*>(this));
@@ -1760,12 +1768,14 @@ std::optional<zipdesk::OverwritePolicy> MainWindow::askOverwrite(const std::vect
                 .arg(target.isDir() ? QString("文件夹") : QString::number(target.size()) + " 字节");
         }
     }
-    box.setInformativeText(QString("检测到 %1 个同名项目。\n目标目录：%2\n覆盖会替换目标内容，无法自动撤销。")
-        .arg(conflicts).arg(QDir::toNativeSeparators(QString::fromStdWString(outputDir))));
+    box.setInformativeText(QString("检测到 %1 个同名项目。\n目标目录：%2\n覆盖会替换目标内容，无法自动撤销。%3")
+        .arg(conflicts).arg(QDir::toNativeSeparators(QString::fromStdWString(outputDir)))
+        .arg(allowSkip ? QString("\n保留两者会保留原文件，新文件另存为“名称 (2)”这类编号名称。") : QString()));
     if (conflicts > details.size()) details << QString("仅展示前 100 项，共 %1 项。").arg(conflicts);
     if (!details.isEmpty()) box.setDetailedText(details.join("\n\n"));
     box.setText(allowSkip ? "目标位置已有同名文件。这一批要如何处理？" : "目标位置已有同名文件。移动前必须完整解压，是否覆盖目标文件？");
     auto* overwrite = box.addButton("全部覆盖", QMessageBox::AcceptRole);
+    auto* keepBoth = allowSkip ? box.addButton("保留两者", QMessageBox::ActionRole) : nullptr;
     auto* skip = allowSkip ? box.addButton("全部跳过", QMessageBox::ActionRole) : nullptr;
     auto* cancel = box.addButton("取消", QMessageBox::RejectRole);
     box.setDefaultButton(cancel);
@@ -1773,6 +1783,9 @@ std::optional<zipdesk::OverwritePolicy> MainWindow::askOverwrite(const std::vect
     box.exec();
     if (box.clickedButton() == overwrite) {
         return zipdesk::OverwritePolicy::Overwrite;
+    }
+    if (allowSkip && box.clickedButton() == keepBoth) {
+        return zipdesk::OverwritePolicy::KeepBoth;
     }
     if (allowSkip && box.clickedButton() == skip) {
         return zipdesk::OverwritePolicy::Skip;
@@ -1909,12 +1922,21 @@ void MainWindow::finishCompress(const QString& output) {
     statusBar()->showMessage("已生成 " + native);
 }
 
-void MainWindow::finishExtract(const QString& directory, bool skippedExisting) {
+void MainWindow::finishExtract(const QString& directory, bool skippedExisting, const QStringList& keptCopies) {
     statusBar()->showMessage("解压操作已完成：" + directory);
     QMessageBox box(isShellExtract() ? nullptr : this);
     box.setWindowTitle("解压完成");
+    QString kept;
+    if (!keptCopies.isEmpty()) {
+        kept = QString("\n已按“保留两者”处理：原文件未改动，%1 个同名文件另存为新名称，例如：\n  %2")
+            .arg(keptCopies.size()).arg(QDir::toNativeSeparators(keptCopies.front()));
+        QStringList details;
+        for (const QString& path : keptCopies.mid(0, 100)) details << QDir::toNativeSeparators(path);
+        if (keptCopies.size() > details.size()) details << QString("仅展示前 100 项，共 %1 项。").arg(keptCopies.size());
+        box.setDetailedText("另存为新名称的文件：\n" + details.join("\n"));
+    }
     box.setText("解压操作已完成。" +
-                (skippedExisting ? QString("\n同名文件已按“全部跳过”规则处理。") : QString()) +
+                (skippedExisting ? QString("\n同名文件已按“全部跳过”规则处理。") : QString()) + kept +
                 "\n目标目录：\n" + QDir::toNativeSeparators(directory));
     auto* open = box.addButton("打开目标文件夹", QMessageBox::ActionRole);
     box.addButton("完成", QMessageBox::AcceptRole);
@@ -2097,10 +2119,11 @@ void MainWindow::extractArchive(bool selectedOnly, bool namedFolder) {
         }
         const QString finishedDir = QString::fromStdWString(outputDir);
         const auto skipped = std::make_shared<std::atomic_bool>(false);
+        const auto kept = std::make_shared<QStringList>();
         m_extractOutputDir = finishedDir;
         begin(
             "正在解压",
-            [this, archive, outputDir, created, skipped](const zipdesk::OperationHooks& hooks) {
+            [this, archive, outputDir, created, skipped, kept](const zipdesk::OperationHooks& hooks) {
                 const zipdesk::ArchiveInfo info = m_service.read(archive, L"", hooks);
                 zipdesk::OverwritePolicy policy = zipdesk::OverwritePolicy::Overwrite;
                 if (zipdesk::hasConflicts(info.entries, {}, outputDir)) {
@@ -2124,10 +2147,10 @@ void MainWindow::extractArchive(bool selectedOnly, bool namedFolder) {
                 request.overwrite = policy;
                 request.removeOutputOnCancel = created;
                 request.relativePaths = relativePathsOf(info.entries, {});
-                m_service.extract(request, hooks);
+                *kept = keptCopiesOf(m_service.extract(request, hooks));
             },
-            [this, finishedDir, skipped]() {
-                finishExtract(finishedDir, skipped->load());
+            [this, finishedDir, skipped, kept]() {
+                finishExtract(finishedDir, skipped->load(), *kept);
             });
         return;
     }
@@ -2186,12 +2209,15 @@ void MainWindow::extractArchive(bool selectedOnly, bool namedFolder) {
     request.removeOutputOnCancel = removeOnCancel;
     const QString finishedDir = QString::fromStdWString(outputDir);
     const bool skippedExisting = policy == zipdesk::OverwritePolicy::Skip;
+    const auto kept = std::make_shared<QStringList>();
     m_extractOutputDir = finishedDir;
     begin(
         "正在解压",
-        [this, request](const zipdesk::OperationHooks& hooks) { m_service.extract(request, hooks); },
-        [this, finishedDir, skippedExisting]() {
-            finishExtract(finishedDir, skippedExisting);
+        [this, request, kept](const zipdesk::OperationHooks& hooks) {
+            *kept = keptCopiesOf(m_service.extract(request, hooks));
+        },
+        [this, finishedDir, skippedExisting, kept]() {
+            finishExtract(finishedDir, skippedExisting, *kept);
         });
 }
 
@@ -2200,9 +2226,10 @@ void MainWindow::smartExtract(const QString& path) {
     const std::wstring password = archive == m_path ? m_password : L"";
     const auto result = std::make_shared<QString>(QFileInfo(path).absolutePath());
     const auto skipped = std::make_shared<std::atomic_bool>(false);
+    const auto kept = std::make_shared<QStringList>();
     m_extractOutputDir = *result;
     begin("正在解压",
-        [this, archive, password, result, skipped](const zipdesk::OperationHooks& hooks) {
+        [this, archive, password, result, skipped, kept](const zipdesk::OperationHooks& hooks) {
             const auto info = m_service.read(archive, password, hooks);
             const auto destination = zipdesk::smartExtractDestination(archive, info.entries);
             QMetaObject::invokeMethod(this, [&]() {
@@ -2232,9 +2259,9 @@ void MainWindow::smartExtract(const QString& path) {
             request.overwrite = policy;
             request.removeOutputOnCancel = created;
             request.relativePaths = relativePathsOf(info.entries, {});
-            m_service.extract(request, hooks);
+            *kept = keptCopiesOf(m_service.extract(request, hooks));
         },
-        [this, result, skipped]() { finishExtract(*result, skipped->load()); });
+        [this, result, skipped, kept]() { finishExtract(*result, skipped->load(), *kept); });
 }
 void MainWindow::shellExtract(bool namedFolder) {
     if (m_launch.paths.empty()) {
@@ -2247,10 +2274,11 @@ void MainWindow::shellExtract(bool namedFolder) {
         ? archiveFile.parent_path() / archiveFile.stem() : archiveFile.parent_path();
     const QString finishedDir = QString::fromStdWString(destination.wstring());
     const auto skipped = std::make_shared<std::atomic_bool>(false);
+    const auto kept = std::make_shared<QStringList>();
     m_extractOutputDir = finishedDir;
     begin(
         "正在解压",
-        [this, archive, namedFolder, skipped](const zipdesk::OperationHooks& hooks) {
+        [this, archive, namedFolder, skipped, kept](const zipdesk::OperationHooks& hooks) {
             const zipdesk::ArchiveInfo info = m_service.read(archive, L"", hooks);
             bool created = false;
             std::wstring outputDir;
@@ -2281,9 +2309,9 @@ void MainWindow::shellExtract(bool namedFolder) {
             request.overwrite = policy;
             request.removeOutputOnCancel = created;
             request.relativePaths = relativePathsOf(info.entries, {});
-            m_service.extract(request, hooks);
+            *kept = keptCopiesOf(m_service.extract(request, hooks));
         },
-        [this, finishedDir, skipped]() { finishExtract(finishedDir, skipped->load()); });
+        [this, finishedDir, skipped, kept]() { finishExtract(finishedDir, skipped->load(), *kept); });
 }
 
 void MainWindow::shellCompress(zipdesk::ArchiveFormat format) {

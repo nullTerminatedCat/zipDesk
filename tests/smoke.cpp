@@ -210,6 +210,31 @@ void testOverwriteAndCancel(zipdesk::ArchiveService& service, const fs::path& ro
     service.extract(overwrite, {});
     check(readFile(target) == "hello", "overwrite replaces the existing file");
 
+    writeFile(target, "EXISTING");
+    zipdesk::ExtractRequest keepBoth = skip;
+    keepBoth.overwrite = zipdesk::OverwritePolicy::KeepBoth;
+    const zipdesk::ExtractResult keptOnce = service.extract(keepBoth, {});
+    const fs::path keptSecond = target.parent_path() / L"hello (2).txt";
+    check(readFile(target) == "EXISTING", "keep both leaves the existing file untouched");
+    check(keptOnce.keptCopies.size() == 1 && fs::path(keptOnce.keptCopies.front()).filename() == L"hello (2).txt",
+          "keep both reports the numbered copy");
+    check(readFile(keptSecond) == "hello", "keep both writes the archive file beside the original");
+    const zipdesk::ExtractResult keptTwice = service.extract(keepBoth, {});
+    check(keptTwice.keptCopies.size() == 1 && readFile(target.parent_path() / L"hello (3).txt") == "hello" &&
+              readFile(keptSecond) == "hello",
+          "keep both picks the next free number without replacing earlier copies");
+    bool stagingLeft = false;
+    for (const auto& item : fs::directory_iterator(extracted)) {
+        if (item.path().filename().wstring().rfind(L".qingxia-keep-", 0) == 0) stagingLeft = true;
+    }
+    check(!stagingLeft, "keep both removes its private staging folder");
+    check(fs::path(zipdesk::keepBothName(extracted.wstring(), L"docs/report.tar.gz")).filename() ==
+              L"report.tar (2).gz" &&
+              zipdesk::keepBothName(extracted.wstring(), L".env") == L".env (2)",
+          "keep both names keep the extension and handle dot files");
+    fs::remove(keptSecond);
+    fs::remove(target.parent_path() / L"hello (3).txt");
+
     writeFile(target, "PRESERVE");
     std::atomic<bool> extractCancel{false};
     zipdesk::OperationHooks extractHooks;

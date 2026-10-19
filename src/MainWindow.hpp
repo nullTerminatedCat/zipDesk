@@ -59,7 +59,8 @@ private:
     void chooseAndOpen();
     void createArchive(const QStringList& inputs);
     void finishCompress(const QString& output);
-    void finishExtract(const QString& directory, bool skippedExisting = false);
+    void finishExtract(const QString& directory, bool skippedExisting = false,
+                       const QStringList& keptCopies = {});
     void showExtractIssue(const QString& title, const QString& message, const QString& directory, bool failed);
     void returnHome();
     void showSettings();
