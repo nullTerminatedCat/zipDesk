@@ -1,7 +1,7 @@
 ; 青匣安装脚本。在 installer 目录用 ISCC 编译。
 
 #define AppName "青匣"
-#define AppVersion "0.2.2"
+#define AppVersion "0.2.3"
 #define AppExe "ZipDesk.exe"
 #ifndef AppArchitecture
   #define AppArchitecture "x64"
