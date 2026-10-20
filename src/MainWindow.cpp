@@ -1,4 +1,5 @@
 #include "MainWindow.hpp"
+#include "ConflictDialog.hpp"
 
 #include "ArchiveJob.hpp"
 #include "CompressDialog.hpp"
@@ -1752,12 +1753,14 @@ QString extractPathList(const QString& heading, const std::vector<std::wstring>&
 }  // namespace
 
 std::optional<zipdesk::OverwritePolicy> MainWindow::askOverwrite(const std::vector<zipdesk::ArchiveEntry>& entries,
-    const std::vector<std::uint32_t>& indices, const std::wstring& outputDir, bool allowSkip) {
+    const std::vector<std::uint32_t>& indices, const std::wstring& outputDir, bool allowSkip,
+    std::map<std::wstring, zipdesk::OverwritePolicy>* itemChoices) {
     QMessageBox box(m_progress->isVisible() ? static_cast<QWidget*>(m_progress) : static_cast<QWidget*>(this));
     box.setIcon(QMessageBox::Question);
     box.setWindowTitle("同名文件");
     box.setTextFormat(Qt::PlainText);
     QStringList details;
+    QVector<ConflictDialog::Item> items;
     int conflicts = 0;
     for (const auto& entry : entries) {
         if (entry.isDir || entry.path.empty() ||
@@ -1765,6 +1768,7 @@ std::optional<zipdesk::OverwritePolicy> MainWindow::askOverwrite(const std::vect
         const QFileInfo target(QDir(QString::fromStdWString(outputDir)).filePath(QString::fromStdWString(entry.path)));
         if (!target.exists()) continue;
         ++conflicts;
+        items.push_back({entry.path, entry.size, target.isDir() ? 0 : target.size(), target.isDir()});
         if (details.size() < 100) {
             details << QString("%1\n  压缩包内：%2 字节；目标：%3")
                 .arg(QString::fromStdWString(entry.path))
@@ -1781,6 +1785,9 @@ std::optional<zipdesk::OverwritePolicy> MainWindow::askOverwrite(const std::vect
     auto* overwrite = box.addButton("全部覆盖", QMessageBox::AcceptRole);
     auto* keepBoth = allowSkip ? box.addButton("保留两者", QMessageBox::ActionRole) : nullptr;
     auto* skip = allowSkip ? box.addButton("全部跳过", QMessageBox::ActionRole) : nullptr;
+    // Very large batches stay on the batch choices to keep the dialog responsive.
+    auto* perItem = allowSkip && itemChoices && conflicts <= 2000
+        ? box.addButton("逐项选择…", QMessageBox::ActionRole) : nullptr;
     auto* cancel = box.addButton("取消", QMessageBox::RejectRole);
     box.setDefaultButton(cancel);
     box.setEscapeButton(cancel);
@@ -1793,6 +1800,13 @@ std::optional<zipdesk::OverwritePolicy> MainWindow::askOverwrite(const std::vect
     }
     if (allowSkip && box.clickedButton() == skip) {
         return zipdesk::OverwritePolicy::Skip;
+    }
+    if (perItem && box.clickedButton() == perItem) {
+        ConflictDialog dialog(items, QString::fromStdWString(outputDir), box.parentWidget());
+        if (dialog.exec() != QDialog::Accepted) return std::nullopt;
+        *itemChoices = dialog.choices();
+        // Every conflict has an explicit choice; KeepBoth is only the safe fallback.
+        return zipdesk::OverwritePolicy::KeepBoth;
     }
     return std::nullopt;
 }
@@ -2146,10 +2160,11 @@ void MainWindow::extractArchive(bool selectedOnly, bool namedFolder) {
             [this, archive, outputDir, created, skipped, kept](const zipdesk::OperationHooks& hooks) {
                 const zipdesk::ArchiveInfo info = m_service.read(archive, L"", hooks);
                 zipdesk::OverwritePolicy policy = zipdesk::OverwritePolicy::Overwrite;
+                std::map<std::wstring, zipdesk::OverwritePolicy> itemChoices;
                 if (zipdesk::hasConflicts(info.entries, {}, outputDir)) {
                     std::optional<zipdesk::OverwritePolicy> choice;
                     QMetaObject::invokeMethod(
-                        this, [&]() { choice = askOverwrite(info.entries, {}, outputDir); }, Qt::BlockingQueuedConnection);
+                        this, [&]() { choice = askOverwrite(info.entries, {}, outputDir, true, &itemChoices); }, Qt::BlockingQueuedConnection);
                     if (!choice) {
                         if (created) {
                             std::error_code error;
@@ -2165,6 +2180,7 @@ void MainWindow::extractArchive(bool selectedOnly, bool namedFolder) {
                 request.outputDir = outputDir;
                 request.password = info.password;
                 request.overwrite = policy;
+                request.itemChoices = itemChoices;
                 request.removeOutputOnCancel = created;
                 request.relativePaths = relativePathsOf(info.entries, {});
                 *kept = m_service.extract(request, hooks);
@@ -2207,8 +2223,9 @@ void MainWindow::extractArchive(bool selectedOnly, bool namedFolder) {
     }
 
     zipdesk::OverwritePolicy policy = zipdesk::OverwritePolicy::Overwrite;
+    std::map<std::wstring, zipdesk::OverwritePolicy> itemChoices;
     if (zipdesk::hasConflicts(m_entries, indices, outputDir)) {
-        const auto choice = askOverwrite(m_entries, indices, outputDir);
+        const auto choice = askOverwrite(m_entries, indices, outputDir, true, &itemChoices);
         if (!choice) {
             if (removeOnCancel) {
                 std::error_code error;
@@ -2226,6 +2243,7 @@ void MainWindow::extractArchive(bool selectedOnly, bool namedFolder) {
     request.indices = indices;
     request.relativePaths = relativePathsOf(m_entries, indices);
     request.overwrite = policy;
+    request.itemChoices = itemChoices;
     request.removeOutputOnCancel = removeOnCancel;
     const QString finishedDir = QString::fromStdWString(outputDir);
     const bool skippedExisting = policy == zipdesk::OverwritePolicy::Skip;
@@ -2258,9 +2276,10 @@ void MainWindow::smartExtract(const QString& path) {
             }, Qt::BlockingQueuedConnection);
             const bool created = std::filesystem::create_directories(destination.outputDir);
             auto policy = zipdesk::OverwritePolicy::Overwrite;
+            std::map<std::wstring, zipdesk::OverwritePolicy> itemChoices;
             if (zipdesk::hasConflicts(info.entries, {}, destination.outputDir)) {
                 std::optional<zipdesk::OverwritePolicy> choice;
-                QMetaObject::invokeMethod(this, [&]() { choice = askOverwrite(info.entries, {}, destination.outputDir); },
+                QMetaObject::invokeMethod(this, [&]() { choice = askOverwrite(info.entries, {}, destination.outputDir, true, &itemChoices); },
                                           Qt::BlockingQueuedConnection);
                 if (!choice) {
                     if (created) {
@@ -2277,6 +2296,7 @@ void MainWindow::smartExtract(const QString& path) {
             request.outputDir = destination.outputDir;
             request.password = info.password;
             request.overwrite = policy;
+            request.itemChoices = itemChoices;
             request.removeOutputOnCancel = created;
             request.relativePaths = relativePathsOf(info.entries, {});
             *kept = m_service.extract(request, hooks);
@@ -2308,10 +2328,11 @@ void MainWindow::shellExtract(bool namedFolder) {
                 outputDir = std::filesystem::path(archive).parent_path().wstring();
             }
             zipdesk::OverwritePolicy policy = zipdesk::OverwritePolicy::Overwrite;
+            std::map<std::wstring, zipdesk::OverwritePolicy> itemChoices;
             if (zipdesk::hasConflicts(info.entries, {}, outputDir)) {
                 std::optional<zipdesk::OverwritePolicy> choice;
                 QMetaObject::invokeMethod(
-                    this, [&]() { choice = askOverwrite(info.entries, {}, outputDir); }, Qt::BlockingQueuedConnection);
+                    this, [&]() { choice = askOverwrite(info.entries, {}, outputDir, true, &itemChoices); }, Qt::BlockingQueuedConnection);
                 if (!choice) {
                     if (created) {
                         std::error_code error;
@@ -2327,6 +2348,7 @@ void MainWindow::shellExtract(bool namedFolder) {
             request.outputDir = outputDir;
             request.password = info.password;
             request.overwrite = policy;
+            request.itemChoices = itemChoices;
             request.removeOutputOnCancel = created;
             request.relativePaths = relativePathsOf(info.entries, {});
             *kept = m_service.extract(request, hooks);

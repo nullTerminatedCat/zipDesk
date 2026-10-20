@@ -290,7 +290,7 @@ void MainWindow::extractEntries(const std::vector<zipdesk::ArchiveEntry>& entrie
         }
     }
     if (checkConflicts && zipdesk::hasConflicts(m_entries, request.indices, request.outputDir)) {
-        const auto choice = askOverwrite(m_entries, request.indices, request.outputDir, allowSkip);
+        const auto choice = askOverwrite(m_entries, request.indices, request.outputDir, allowSkip, &request.itemChoices);
         if (!choice) {
             return;
         }

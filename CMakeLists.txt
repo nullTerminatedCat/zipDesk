@@ -69,6 +69,8 @@ qt_add_executable(ZipDesk WIN32
     src/ProgressDialog.hpp
     src/CompressDialog.cpp
     src/CompressDialog.hpp
+    src/ConflictDialog.cpp
+    src/ConflictDialog.hpp
     src/ShellIntegration.cpp
     src/ShellIntegration.hpp
     src/Cli.cpp
@@ -89,6 +91,11 @@ qt_add_resources(ZipDesk app_assets
     FILES
         ${CMAKE_CURRENT_SOURCE_DIR}/resources/icon.png
         ${CMAKE_CURRENT_SOURCE_DIR}/resources/empty.png
+        ${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/conflict-copy.png
+        ${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/conflict-skip.png
+        ${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/conflict-refresh.png
+        ${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/conflict-warning.png
+        ${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/conflict-file-common.png
 )
 target_link_libraries(ZipDesk PRIVATE zipdesk_core Qt6::Widgets shell32 dwmapi)
 if(MSVC)
@@ -152,6 +159,8 @@ if(TARGET Qt6::Test)
         src/ProgressDialog.hpp
         src/CompressDialog.cpp
         src/CompressDialog.hpp
+        src/ConflictDialog.cpp
+        src/ConflictDialog.hpp
         src/ShellIntegration.cpp
         src/ShellIntegration.hpp
         src/Lang.cpp
@@ -163,6 +172,11 @@ if(TARGET Qt6::Test)
         FILES
             ${CMAKE_CURRENT_SOURCE_DIR}/resources/icon.png
             ${CMAKE_CURRENT_SOURCE_DIR}/resources/empty.png
+        ${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/conflict-copy.png
+        ${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/conflict-skip.png
+        ${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/conflict-refresh.png
+        ${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/conflict-warning.png
+        ${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/conflict-file-common.png
     )
     target_include_directories(zipdesk_main_ui_smoke PRIVATE src)
     target_link_libraries(zipdesk_main_ui_smoke PRIVATE zipdesk_core Qt6::Widgets Qt6::Test shell32 dwmapi)
@@ -188,7 +202,7 @@ if(BUILD_TESTING)
         foreach(scenario IN ITEMS overwrite cancel failure decline)
             zipdesk_add_ui_test(move_${scenario} zipdesk_main_ui_smoke --move ${scenario})
         endforeach()
-        foreach(scenario IN ITEMS success skip keep cancel failure smart-directory smart-success smart-skip smart-keep smart-cancel smart-failure smart-empty smart-window smart-directory-skip)
+        foreach(scenario IN ITEMS success skip keep pick cancel failure smart-directory smart-success smart-skip smart-keep smart-pick smart-cancel smart-failure smart-empty smart-window smart-directory-skip)
             zipdesk_add_ui_test(extract_${scenario} zipdesk_main_ui_smoke --extract ${scenario})
         endforeach()
     endif()

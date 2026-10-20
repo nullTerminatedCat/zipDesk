@@ -9,6 +9,7 @@
 
 #include <functional>
 #include <atomic>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -82,7 +83,8 @@ private:
     void onCancelled();
     std::optional<QString> promptPassword(const QString& text);
     std::optional<zipdesk::OverwritePolicy> askOverwrite(const std::vector<zipdesk::ArchiveEntry>& entries,
-        const std::vector<std::uint32_t>& indices, const std::wstring& outputDir, bool allowSkip = true);
+        const std::vector<std::uint32_t>& indices, const std::wstring& outputDir, bool allowSkip = true,
+        std::map<std::wstring, zipdesk::OverwritePolicy>* itemChoices = nullptr);
     std::vector<std::uint32_t> selectedIndices() const;
     QStringList selectedTopLevelPaths() const;
     void storePending(zipdesk::ArchiveInfo info);

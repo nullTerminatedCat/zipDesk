@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <exception>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -76,6 +77,10 @@ struct ExtractRequest {
     std::vector<std::uint32_t> indices;
     std::vector<std::wstring> relativePaths;
     OverwritePolicy overwrite = OverwritePolicy::Overwrite;
+    // Per-file decisions for existing targets, keyed by archive path. A conflicting
+    // file without an entry falls back to `overwrite`. Non-conflicting files are
+    // always written normally.
+    std::map<std::wstring, OverwritePolicy> itemChoices;
     bool removeOutputOnCancel = false;
 };
 

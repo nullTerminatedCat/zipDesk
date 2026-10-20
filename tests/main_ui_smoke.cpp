@@ -2,6 +2,7 @@
 #include "ArchiveJob.hpp"
 #include "Launch.hpp"
 #include "MainWindow.hpp"
+#include "ConflictDialog.hpp"
 
 #include <bit7z/bit7zlibrary.hpp>
 #include <bit7z/bitfilecompressor.hpp>
@@ -21,6 +22,7 @@
 #include <QFileInfo>
 #include <QFrame>
 #include <QItemSelectionModel>
+#include <QLabel>
 #include <QListWidget>
 #include <QLineEdit>
 #include <QMenu>
@@ -108,7 +110,7 @@ bool testExtractResult(QApplication& app, const QString& root, const QString& sc
     } else {
         service.compress(request, {});
     }
-    if (mode == "skip" || mode == "cancel" || mode == "keep") {
+    if (mode == "skip" || mode == "cancel" || mode == "keep" || mode == "pick") {
         if (!QDir().mkpath(output) || !write(target, "existing")) return false;
     } else if (mode == "failure") {
         if (!write(output, "keep")) return false;
@@ -126,7 +128,34 @@ bool testExtractResult(QApplication& app, const QString& root, const QString& sc
     bool windowActionStarted = false;
     QTimer dialogs;
     dialogs.setInterval(20);
+    bool pickerSeen = false;
     QObject::connect(&dialogs, &QTimer::timeout, &window, [&]() {
+        if (auto* picker = dynamic_cast<ConflictDialog*>(QApplication::activeModalWidget())) {
+            // Per-item dialog: bulk "skip all", then override the single row to overwrite.
+            pickerSeen = true;
+            auto* summary = picker->findChild<QLabel*>("conflictSummary");
+            auto* allSkip = picker->findChild<QPushButton*>("all_skip");
+            auto* confirm = picker->findChild<QPushButton*>("confirmConflicts");
+            auto* cancelButton = picker->findChild<QPushButton*>("cancelConflicts");
+            valid = valid && picker->rowCount() == 1 && summary && allSkip && confirm && cancelButton &&
+                cancelButton->isDefault() && !confirm->isDefault() &&
+                picker->choice(0) == zipdesk::OverwritePolicy::KeepBoth &&
+                summary->text().contains("保留两者 1");
+            if (!valid || !allSkip || !confirm) { picker->reject(); return; }
+            allSkip->click();
+            valid = valid && picker->choice(0) == zipdesk::OverwritePolicy::Skip && summary->text().contains("跳过 1");
+            QToolButton* rowOverwrite = nullptr;
+            for (auto* button : picker->findChildren<QToolButton*>("overwrite")) rowOverwrite = button;
+            valid = valid && rowOverwrite;
+            if (rowOverwrite) rowOverwrite->click();
+            valid = valid && picker->choice(0) == zipdesk::OverwritePolicy::Overwrite &&
+                summary->text().contains("覆盖 1") &&
+                picker->choices().count(L"sample.txt") == 1;
+            if (qEnvironmentVariableIsSet("ZIPDESK_UI_CAPTURE"))
+                picker->grab().save(QDir(QCoreApplication::applicationDirPath()).filePath("ui-conflict-picker.png"));
+            confirm->click();
+            return;
+        }
         auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
         if (!box) {
             auto* table = window.findChild<QTableView*>();
@@ -152,7 +181,8 @@ bool testExtractResult(QApplication& app, const QString& root, const QString& sc
             if (qEnvironmentVariableIsSet("ZIPDESK_UI_CAPTURE"))
                 box->grab().save(QDir(QCoreApplication::applicationDirPath()).filePath("ui-conflict-preview.png"));
             valid = valid && box->informativeText().contains("保留两者");
-            const QString choice = mode == "skip" ? "全部跳过" : mode == "keep" ? "保留两者" : "取消";
+            const QString choice = mode == "skip" ? "全部跳过" : mode == "keep" ? "保留两者"
+                : mode == "pick" ? "逐项选择…" : "取消";
             if (mode == "cancel")
                 valid = write(QDir(output).filePath("user.txt"), "user") && valid;
             for (auto* button : box->buttons()) {
@@ -176,6 +206,9 @@ bool testExtractResult(QApplication& app, const QString& root, const QString& sc
                 box->detailedText().contains("跳过的同名文件") && box->detailedText().contains("sample.txt");
         if (mode == "keep")
             valid = valid && box->text().contains("新写入 1 个文件") && box->text().contains("另存 1 个同名文件");
+        if (mode == "pick")
+            valid = valid && box->text().contains("新写入 1 个文件") && box->text().contains("覆盖 1 个同名文件") &&
+                !box->text().contains("跳过");
         if (mode == "skip" && qEnvironmentVariableIsSet("ZIPDESK_UI_CAPTURE"))
             box->grab().save(QDir(QCoreApplication::applicationDirPath()).filePath("ui-extract-counts.png"));
         if (mode == "keep")
@@ -207,13 +240,14 @@ bool testExtractResult(QApplication& app, const QString& root, const QString& sc
         return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
     };
     valid = valid && code == 0 && resultSeen &&
-        conflictSeen == (mode == "skip" || mode == "cancel" || mode == "keep");
+        conflictSeen == (mode == "skip" || mode == "cancel" || mode == "keep" || mode == "pick") &&
+        pickerSeen == (mode == "pick");
     if (mode == "failure") {
         valid = valid && read(output) == "keep";
     } else if (mode == "empty") {
         valid = valid && !QFile::exists(QDir(root).filePath("sample"));
     } else {
-        valid = valid && read(target) == ((mode == "success" || mode == "directory") ? "sample" : "existing");
+        valid = valid && read(target) == ((mode == "success" || mode == "directory" || mode == "pick") ? "sample" : "existing");
         if (mode == "keep") valid = valid && read(QDir(output).filePath("sample (2).txt")) == "sample";
         if (mode == "cancel") {
             valid = valid && read(QDir(output).filePath("user.txt")) == "user" &&

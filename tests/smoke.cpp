@@ -179,6 +179,61 @@ void testRoundTrip(zipdesk::ArchiveService& service, zipdesk::ArchiveFormat form
     check(readFile(findChild(root / "good", L"hello.txt")) == "hello", "correct password extracts");
 }
 
+void testPerItemChoices(zipdesk::ArchiveService& service, const fs::path& root) {
+    const fs::path input = root / "input";
+    for (const char* name : {"a.txt", "b.txt", "c.txt", "d.txt"}) writeFile(input / name, std::string("new-") + name);
+    zipdesk::CompressRequest pack;
+    for (const char* name : {"a.txt", "b.txt", "c.txt", "d.txt"}) pack.inputs.push_back((input / name).wstring());
+    pack.outputPath = (root / "items.zip").wstring();
+    service.compress(pack, {});
+    const fs::path out = root / "out";
+    for (const char* name : {"a.txt", "b.txt", "c.txt"}) writeFile(out / name, "OLD");
+
+    zipdesk::ExtractRequest request;
+    request.archivePath = pack.outputPath;
+    request.outputDir = out.wstring();
+    request.overwrite = zipdesk::OverwritePolicy::KeepBoth;
+    request.itemChoices = {{L"a.txt", zipdesk::OverwritePolicy::Overwrite},
+                           {L"b.txt", zipdesk::OverwritePolicy::Skip},
+                           {L"c.txt", zipdesk::OverwritePolicy::KeepBoth}};
+    const zipdesk::ExtractResult mixed = service.extract(request, {});
+    check(readFile(out / "a.txt") == "new-a.txt", "per-item overwrite replaces only the chosen file");
+    check(readFile(out / "b.txt") == "OLD", "per-item skip leaves the chosen file untouched");
+    check(readFile(out / "c.txt") == "OLD" && readFile(out / "c (2).txt") == "new-c.txt",
+          "per-item keep both saves a numbered copy");
+    check(readFile(out / "d.txt") == "new-d.txt", "per-item choices still write non-conflicting files");
+    check(mixed.written == 1 && mixed.overwritten == 1 && mixed.keptCopies.size() == 1 && mixed.skipped.size() == 1 &&
+              mixed.skipped.front() == L"b.txt" && mixed.missing.empty(),
+          "per-item result counts every decision");
+
+    // Only skipped conflicts selected: nothing may be extracted (an empty index list means "all").
+    const fs::path onlySkip = root / "only-skip";
+    writeFile(onlySkip / "a.txt", "OLD");
+    zipdesk::ArchiveInfo info = service.read(pack.outputPath, L"", {});
+    zipdesk::ExtractRequest skipOnly = request;
+    skipOnly.outputDir = onlySkip.wstring();
+    skipOnly.indices.clear();
+    for (const auto& entry : info.entries)
+        if (entry.path == L"a.txt") skipOnly.indices.push_back(entry.index);
+    skipOnly.itemChoices = {{L"a.txt", zipdesk::OverwritePolicy::Skip}};
+    const zipdesk::ExtractResult skipped = service.extract(skipOnly, {});
+    check(readFile(onlySkip / "a.txt") == "OLD" && !fs::exists(onlySkip / "d.txt") && skipped.skipped.size() == 1 &&
+              skipped.written == 0,
+          "per-item skip of the whole selection extracts nothing else");
+
+    // Files without an explicit choice fall back to the batch policy.
+    const fs::path fallback = root / "fallback";
+    for (const char* name : {"a.txt", "b.txt"}) writeFile(fallback / name, "OLD");
+    zipdesk::ExtractRequest partial = request;
+    partial.outputDir = fallback.wstring();
+    partial.overwrite = zipdesk::OverwritePolicy::Skip;
+    partial.itemChoices = {{L"a.txt", zipdesk::OverwritePolicy::Overwrite}};
+    const zipdesk::ExtractResult fallbackResult = service.extract(partial, {});
+    check(readFile(fallback / "a.txt") == "new-a.txt" && readFile(fallback / "b.txt") == "OLD" &&
+              fallbackResult.skipped.size() == 1 && fallbackResult.written == 2,
+          "per-item choices fall back to the batch policy");
+}
+
 void testOverwriteAndCancel(zipdesk::ArchiveService& service, const fs::path& root) {
     const fs::path archive = root / "pack.zip";
     const fs::path extracted = root / "out";
@@ -593,6 +648,7 @@ int main() {
         testRoundTrip(service, zipdesk::ArchiveFormat::SevenZip, root / "7z");
         testOverwriteAndCancel(service, root / "zip");
         testSourceArchiveProtection(service, root / "zip");
+        testPerItemChoices(service, root / "per-item");
         testMove(service, root / "move-zip", zipdesk::ArchiveFormat::Zip);
         testMove(service, root / "move-7z", zipdesk::ArchiveFormat::SevenZip);
     } catch (const std::exception& ex) {

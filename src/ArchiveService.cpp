@@ -608,6 +608,64 @@ ExtractResult ArchiveService::extract(const ExtractRequest& request, const Opera
     if (!fs::exists(request.archivePath)) {
         throw ArchiveError(ErrorKind::Other, L"找不到压缩包。");
     }
+    if (!request.itemChoices.empty()) {
+        // Split the batch by decision: Skip conflicts are left out, Overwrite
+        // conflicts are extracted with Overwrite, everything else goes through
+        // KeepBoth (which writes non-conflicting files and renames kept copies).
+        const ArchiveInfo info = read(request.archivePath, request.password, hooks);
+        const fs::path root(request.outputDir);
+        ExtractRequest keepPass = request;
+        keepPass.password = info.password;
+        keepPass.itemChoices.clear();
+        keepPass.indices.clear();
+        keepPass.relativePaths.clear();
+        keepPass.overwrite = OverwritePolicy::KeepBoth;
+        ExtractRequest overwritePass = keepPass;
+        overwritePass.overwrite = OverwritePolicy::Overwrite;
+        overwritePass.removeOutputOnCancel = false;
+        std::vector<std::wstring> skippedPaths;
+        for (const ArchiveEntry& entry : info.entries) {
+            if (entry.path.empty() || !included(request.indices, entry.index)) {
+                continue;
+            }
+            if (entry.isDir) {
+                keepPass.indices.push_back(entry.index);
+                continue;
+            }
+            std::error_code error;
+            const bool exists = fs::exists(root / entry.path, error);
+            OverwritePolicy choice = request.overwrite;
+            const auto found = request.itemChoices.find(entry.path);
+            if (found != request.itemChoices.end()) {
+                choice = found->second;
+            }
+            if (!exists || choice == OverwritePolicy::KeepBoth) {
+                keepPass.indices.push_back(entry.index);
+                keepPass.relativePaths.push_back(entry.path);
+            } else if (choice == OverwritePolicy::Overwrite) {
+                overwritePass.indices.push_back(entry.index);
+                overwritePass.relativePaths.push_back(entry.path);
+            } else {
+                skippedPaths.push_back(entry.path);
+            }
+        }
+        ExtractResult result;
+        // An empty index list means "everything", so only run passes with items.
+        if (!keepPass.indices.empty()) {
+            result = extract(keepPass, hooks);
+        }
+        if (!overwritePass.indices.empty()) {
+            if (hooks.cancel && hooks.cancel->load()) {
+                throw ArchiveError(ErrorKind::Cancelled, L"已取消");
+            }
+            const ExtractResult replaced = extract(overwritePass, hooks);
+            result.overwritten += replaced.overwritten;
+            result.written += replaced.written;
+            result.missing.insert(result.missing.end(), replaced.missing.begin(), replaced.missing.end());
+        }
+        result.skipped.insert(result.skipped.end(), skippedPaths.begin(), skippedPaths.end());
+        return result;
+    }
     if (request.overwrite == OverwritePolicy::KeepBoth) {
         // Existing files are never opened for writing: non-conflicting items are
         // extracted with Skip, conflicting ones go to a private staging folder and
