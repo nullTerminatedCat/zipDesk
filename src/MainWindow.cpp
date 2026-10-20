@@ -1672,8 +1672,16 @@ void MainWindow::onSucceeded() {
     }
 }
 
+namespace {
+QString operationVerb(const QString& activeOperation) {
+    if (activeOperation == "正在移动") return QStringLiteral("移动");
+    if (activeOperation == "正在复制") return QStringLiteral("复制");
+    return QStringLiteral("解压");
+}
+}  // namespace
+
 void MainWindow::onFailed(const QString& message) {
-    const bool moving = m_activeOperation == "正在移动";
+    const QString verb = operationVerb(m_activeOperation);
     const QString extractDir = m_extractOutputDir;
     m_extractOutputDir.clear();
     m_activeOperation.clear();
@@ -1693,7 +1701,7 @@ void MainWindow::onFailed(const QString& message) {
     if (extractDir.isEmpty()) {
         QMessageBox::warning(isShellExtract() ? nullptr : this, "青匣", message);
     } else {
-        showExtractIssue(moving ? "移动未完成" : "解压未完成", message + "\n\n目标目录可能已有部分文件，请检查后重试。",
+        showExtractIssue(verb + "未完成", message + "\n\n目标目录可能已有部分文件，请检查后重试。",
                          extractDir, true);
     }
     if (isShellAction()) {
@@ -1702,7 +1710,7 @@ void MainWindow::onFailed(const QString& message) {
 }
 
 void MainWindow::onCancelled() {
-    const bool moving = m_activeOperation == "正在移动";
+    const QString verb = operationVerb(m_activeOperation);
     const QString extractDir = m_extractOutputDir;
     m_extractOutputDir.clear();
     m_activeOperation.clear();
@@ -1719,7 +1727,7 @@ void MainWindow::onCancelled() {
     } else if (extractDir.isEmpty()) {
         statusBar()->showMessage("已取消");
     } else {
-        showExtractIssue(moving ? "移动已取消" : "解压已取消", "目标目录可能已有部分文件，请检查。", extractDir, false);
+        showExtractIssue(verb + "已取消", "目标目录可能已有部分文件，请检查。", extractDir, false);
     }
     if (isShellAction()) {
         QCoreApplication::quit();
@@ -1941,10 +1949,17 @@ void MainWindow::finishCompress(const QString& output) {
 }
 
 void MainWindow::finishExtract(const QString& directory, bool skippedExisting, const zipdesk::ExtractResult& result) {
+    showTransferResult("解压", directory, skippedExisting, result);
+}
+
+// Shared by extraction and "copy to": both write archive entries into a folder and
+// report counts measured on disk afterwards.
+void MainWindow::showTransferResult(const QString& verb, const QString& directory, bool skippedExisting,
+                                    const zipdesk::ExtractResult& result) {
     const bool partial = !result.missing.empty();
-    statusBar()->showMessage((partial ? "解压部分完成：" : "解压操作已完成：") + directory);
+    statusBar()->showMessage(verb + (partial ? "部分完成：" : "操作已完成：") + directory);
     QMessageBox box(isShellExtract() ? nullptr : this);
-    box.setWindowTitle(partial ? "解压部分完成" : "解压完成");
+    box.setWindowTitle(verb + (partial ? "部分完成" : "完成"));
     if (partial) box.setIcon(QMessageBox::Warning);
     // Counts come from checking the destination after extraction, not from the plan.
     QStringList counts;
@@ -1966,11 +1981,11 @@ void MainWindow::finishExtract(const QString& directory, bool skippedExisting, c
     if (skippedExisting) summary += "\n同名文件已按“全部跳过”规则处理，原文件未改动。";
     if (!result.skipped.empty()) details << extractPathList("跳过的同名文件：", result.skipped);
     if (partial) {
-        summary += "\n部分文件在解压后未找到，可能被其他程序移走或写入失败，请检查目标目录。";
+        summary += "\n部分文件在" + verb + "后未找到，可能被其他程序移走或写入失败，请检查目标目录。";
         details << extractPathList("未找到的文件：", result.missing);
     }
     if (!details.isEmpty()) box.setDetailedText(details.join("\n\n"));
-    box.setText((partial ? "解压已结束，但有文件未写出。" : "解压操作已完成。") + summary +
+    box.setText(verb + (partial ? "已结束，但有文件未写出。" : "操作已完成。") + summary +
                 "\n目标目录：\n" + QDir::toNativeSeparators(directory));
     auto* open = box.addButton("打开目标文件夹", QMessageBox::ActionRole);
     box.addButton("完成", QMessageBox::AcceptRole);

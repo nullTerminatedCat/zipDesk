@@ -270,7 +270,8 @@ void MainWindow::reloadArchive() {
 void MainWindow::extractEntries(const std::vector<zipdesk::ArchiveEntry>& entries,
                                 const QString& directory,
                                 const std::function<void()>& after,
-                                bool checkConflicts, bool allowSkip) {
+                                bool checkConflicts, bool allowSkip,
+                                std::shared_ptr<TransferOutcome> outcome, const QString& title) {
     if (entries.empty() || m_path.empty()) {
         return;
     }
@@ -303,7 +304,11 @@ void MainWindow::extractEntries(const std::vector<zipdesk::ArchiveEntry>& entrie
     }
     request.removeOutputOnCancel = created;
     if (checkConflicts) m_extractOutputDir = directory;
-    begin("正在解压", [this, request](const zipdesk::OperationHooks& hooks) { m_service.extract(request, hooks); }, after);
+    if (outcome) outcome->skippedAll = request.overwrite == zipdesk::OverwritePolicy::Skip;
+    begin(title, [this, request, outcome](const zipdesk::OperationHooks& hooks) {
+        zipdesk::ExtractResult result = m_service.extract(request, hooks);
+        if (outcome) outcome->result = std::move(result);
+    }, after);
 }
 
 void MainWindow::openSelected(bool newWindow) {
@@ -622,9 +627,11 @@ void MainWindow::copySelectedTo() {
     if (directory.isEmpty()) {
         return;
     }
-    extractEntries(entries, directory, [this, directory]() {
-        statusBar()->showMessage("已复制到 " + directory);
-    }, true);
+    // Same measured counts as extraction: written / overwritten / kept / skipped / missing.
+    const auto outcome = std::make_shared<TransferOutcome>();
+    extractEntries(entries, directory, [this, directory, outcome]() {
+        showTransferResult("复制", directory, outcome->skippedAll, outcome->result);
+    }, true, true, outcome, QStringLiteral("正在复制"));
 }
 
 void MainWindow::moveSelectedTo() {

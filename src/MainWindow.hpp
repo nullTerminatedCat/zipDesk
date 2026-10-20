@@ -46,6 +46,12 @@ protected:
     bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
 
 private:
+    // Filled on the worker thread by extractEntries and read in the success callback.
+    struct TransferOutcome {
+        zipdesk::ExtractResult result;
+        bool skippedAll = false;
+    };
+
     void buildUi();
     void runLaunch();
     void updateActions();
@@ -62,6 +68,8 @@ private:
     void finishCompress(const QString& output);
     void finishExtract(const QString& directory, bool skippedExisting = false,
                        const zipdesk::ExtractResult& result = {});
+    void showTransferResult(const QString& verb, const QString& directory, bool skippedExisting,
+                            const zipdesk::ExtractResult& result);
     void showExtractIssue(const QString& title, const QString& message, const QString& directory, bool failed);
     void returnHome();
     void showSettings();
@@ -125,7 +133,9 @@ private:
     void extractEntries(const std::vector<zipdesk::ArchiveEntry>& entries,
                         const QString& directory,
                         const std::function<void()>& after,
-                        bool checkConflicts = false, bool allowSkip = true);
+                        bool checkConflicts = false, bool allowSkip = true,
+                        std::shared_ptr<TransferOutcome> outcome = nullptr,
+                        const QString& title = QStringLiteral("正在解压"));
 
     zipdesk::ArchiveService& m_service;
     zipdesk::LaunchCommand m_launch;

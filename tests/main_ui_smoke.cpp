@@ -372,6 +372,155 @@ bool testMoveResult(QApplication& app, const QString& root, const QString& mode)
     std::cout << (valid ? "MOVE UI OK: " : "FAIL: move UI ") << mode.toStdString() << "\n";
     return valid;
 }
+
+// "复制所选到…" reports the same measured counts as extraction.
+bool testCopyResult(QApplication& app, const QString& root, const QString& mode) {
+    app.setQuitOnLastWindowClosed(false);
+    zipdesk::ArchiveService service(
+        QDir(QCoreApplication::applicationDirPath()).filePath("7z.dll").toStdWString());
+    const auto write = [](const QString& path, const QByteArray& bytes) {
+        QFile file(path);
+        return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
+    };
+    const auto read = [](const QString& path) {
+        QFile file(path);
+        return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+    };
+    const QString source = QDir(root).filePath("sample.txt");
+    const QString fresh = QDir(root).filePath("fresh.txt");
+    const QString output = QDir(root).filePath("output");
+    const QString target = QDir(output).filePath("sample.txt");
+    if (!write(source, "sample") || !write(fresh, "fresh") || !QDir().mkpath(output)) return false;
+    if (mode == "failure") {
+        if (!QDir().mkpath(target) || !write(QDir(target).filePath("blocker"), "keep")) return false;
+    } else if (mode == "skip" || mode == "keep" || mode == "pick") {
+        if (!write(target, "old")) return false;
+    } else if (mode != "success") {
+        return false;
+    }
+    const bool expectConflict = mode != "success";
+    zipdesk::CompressRequest request;
+    request.inputs = {source.toStdWString(), fresh.toStdWString()};
+    request.outputPath = QDir(root).filePath("sample.zip").toStdWString();
+    service.compress(request, {});
+    const QByteArray original = read(QString::fromStdWString(request.outputPath));
+    zipdesk::LaunchCommand launch;
+    launch.action = zipdesk::LaunchAction::Open;
+    launch.paths = {request.outputPath};
+    MainWindow window(service, launch);
+    auto* table = window.findChild<QTableView*>();
+    auto* job = window.findChild<ArchiveJob*>();
+    bool started = false, conflict = false, picker = false, result = false, valid = true;
+    QElapsedTimer elapsed;
+    elapsed.start();
+    QTimer dialogs;
+    dialogs.setInterval(20);
+    QObject::connect(&dialogs, &QTimer::timeout, &window, [&]() {
+        if (elapsed.elapsed() > 12000) {
+            valid = false;
+            if (auto* modal = qobject_cast<QDialog*>(QApplication::activeModalWidget())) modal->reject();
+            if (job->isRunning()) job->requestCancel();
+            else app.exit(1);
+            return;
+        }
+        if (auto* chooser = qobject_cast<QFileDialog*>(QApplication::activeModalWidget())) {
+            chooser->setDirectory(output);
+            chooser->selectFile(output);
+            QMetaObject::invokeMethod(chooser, "accept", Qt::DirectConnection);
+            return;
+        }
+        if (auto* items = dynamic_cast<ConflictDialog*>(QApplication::activeModalWidget())) {
+            // Per-item choice: overwrite the single conflicting file.
+            picker = true;
+            QToolButton* rowOverwrite = nullptr;
+            for (auto* button : items->findChildren<QToolButton*>("overwrite")) rowOverwrite = button;
+            auto* confirm = items->findChild<QPushButton*>("confirmConflicts");
+            valid = valid && items->rowCount() == 1 && rowOverwrite && confirm;
+            if (!rowOverwrite || !confirm) { items->reject(); return; }
+            rowOverwrite->click();
+            confirm->click();
+            return;
+        }
+        if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
+            if (box->windowTitle() == "同名文件") {
+                conflict = true;
+                bool canSkip = false;
+                for (auto* button : box->buttons())
+                    if (button->text() == "全部跳过") canSkip = true;
+                valid = valid && canSkip;
+                const QString choice = mode == "skip" ? "全部跳过" : mode == "keep" ? "保留两者"
+                    : mode == "pick" ? "逐项选择…" : "全部覆盖";
+                for (auto* button : box->buttons()) {
+                    if (button->text() == choice) {
+                        button->click();
+                        return;
+                    }
+                }
+                valid = false;
+                box->reject();
+                return;
+            }
+            result = true;
+            const QString text = box->text();
+            const QString expectedTitle = mode == "failure" ? "复制未完成" : "复制完成";
+            if (box->windowTitle() != expectedTitle)
+                std::cerr << "Unexpected copy dialog: " << box->windowTitle().toStdString() << "\n";
+            valid = valid && box->windowTitle() == expectedTitle &&
+                text.contains(QDir::toNativeSeparators(output)) && !text.contains("解压");
+            if (mode == "success")
+                valid = valid && text.contains("复制操作已完成") &&
+                    text.contains("共 2 个文件：新写入 2 个文件") && !text.contains("未找到");
+            if (mode == "skip")
+                valid = valid && text.contains("新写入 1 个文件") && text.contains("跳过 1 个同名文件") &&
+                    text.contains("全部跳过") && box->detailedText().contains("跳过的同名文件") &&
+                    box->detailedText().contains("sample.txt");
+            if (mode == "keep")
+                valid = valid && text.contains("新写入 1 个文件") && text.contains("另存 1 个同名文件") &&
+                    text.contains("sample (2).txt");
+            if (mode == "pick")
+                valid = valid && text.contains("新写入 1 个文件") && text.contains("覆盖 1 个同名文件") &&
+                    !text.contains("跳过");
+            if (mode != "failure") {
+                bool hasOpen = false;
+                for (auto* button : box->buttons())
+                    if (button->text() == "打开目标文件夹") hasOpen = true;
+                valid = valid && hasOpen;
+            }
+            if (mode == "skip" && qEnvironmentVariableIsSet("ZIPDESK_UI_CAPTURE"))
+                box->grab().save(QDir(QCoreApplication::applicationDirPath()).filePath("ui-copy-counts.png"));
+            box->accept();
+            return;
+        }
+        if (result && !job->isRunning()) {
+            app.quit();
+        } else if (!started && table && table->model()->rowCount() == 2 && !job->isRunning()) {
+            table->selectAll();
+            for (auto* action : window.findChildren<QAction*>()) {
+                if (action->property("i18n").toString() == "复制所选到…") {
+                    started = true;
+                    QTimer::singleShot(0, action, &QAction::trigger);
+                    break;
+                }
+            }
+        }
+    });
+    dialogs.start();
+    const int code = app.exec();
+    dialogs.stop();
+    valid = valid && code == 0 && started && result && conflict == expectConflict && picker == (mode == "pick");
+    valid = valid && read(QString::fromStdWString(request.outputPath)) == original;
+    if (mode == "failure") {
+        valid = valid && read(QDir(target).filePath("blocker")) == "keep";
+    } else {
+        valid = valid && read(QDir(output).filePath("fresh.txt")) == "fresh" &&
+            read(target) == ((mode == "success" || mode == "pick") ? "sample" : "old");
+        if (mode == "keep") valid = valid && read(QDir(output).filePath("sample (2).txt")) == "sample";
+    }
+    if (!valid) std::cerr << "copy states: started=" << started << " conflict=" << conflict
+                         << " picker=" << picker << " result=" << result << " code=" << code << "\n";
+    std::cout << (valid ? "COPY UI OK: " : "FAIL: copy UI ") << mode.toStdString() << "\n";
+    return valid;
+}
 }  // namespace
 
 int main(int argc, char* argv[]) {
@@ -389,6 +538,8 @@ int main(int argc, char* argv[]) {
     QSettings().setValue("ui/previewVisible", false);
     if (app.arguments().size() == 3 && app.arguments().at(1) == "--move")
         return testMoveResult(app, temporary.path(), app.arguments().at(2)) ? 0 : 1;
+    if (app.arguments().size() == 3 && app.arguments().at(1) == "--copy")
+        return testCopyResult(app, temporary.path(), app.arguments().at(2)) ? 0 : 1;
     if (app.arguments().size() == 3 && app.arguments().at(1) == "--extract")
         return testExtractResult(app, temporary.path(), app.arguments().at(2)) ? 0 : 1;
 
