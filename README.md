@@ -2,7 +2,7 @@
 
 一个面向 Windows 的轻量压缩文件管理器。打开压缩包、查看内容、按需解压，也可以通过拖放或资源管理器右键菜单创建压缩包。
 
-> 当前为 **0.2.5 预览版本**。可从 [GitHub Releases](https://github.com/nullTerminatedCat/zipDesk/releases/tag/v0.2.5) 下载 Windows x64 / x86 安装包或免安装 ZIP；两种架构使用相同版本源码。功能和界面仍在完善。
+> 当前为 **0.2.6 版本**。可从 [GitHub Releases](https://github.com/nullTerminatedCat/zipDesk/releases/tag/v0.2.6) 下载 Windows x64 / x86 安装包或免安装 ZIP；两种架构使用相同版本源码。功能和界面仍在完善。
 
 ![青匣主页](docs/screenshots/home.png)
 
@@ -10,7 +10,7 @@
 
 以下功能描述以当前源码为准，已发布二进制的功能以对应 Release 说明为准。
 
-本轮界面优化及后续安排见 [体验优化方案](docs/UX_ROUND1.md)，版本变化见 [v0.2.5 更新说明](docs/RELEASE_0.2.5.md)。
+本轮界面优化及后续安排见 [体验优化方案](docs/UX_ROUND1.md)，版本变化见 [v0.2.6 更新说明](docs/RELEASE_0.2.6.md)。
 
 ## 功能
 
@@ -31,7 +31,7 @@
 
 ## 获取与使用
 
-在 [Release 页面](https://github.com/nullTerminatedCat/zipDesk/releases/tag/v0.2.5) 下载 `setup.exe` 安装包，或完整解压 `portable.zip` 后运行 `ZipDesk.exe`。两种包均包含 Qt、7-Zip 和 Visual C++ 运行库，另附 SHA-256 校验文件。程序未做代码签名。
+在 [Release 页面](https://github.com/nullTerminatedCat/zipDesk/releases/tag/v0.2.6) 下载 `setup.exe` 安装包，或完整解压 `portable.zip` 后运行 `ZipDesk.exe`。两种包均包含 Qt、7-Zip 和 Visual C++ 运行库，另附 SHA-256 校验文件。程序未做代码签名。
 
 启动后，可以拖入 ZIP、7z、RAR 查看内容，或拖入普通文件和文件夹创建压缩包。打开压缩包后，工具栏提供解压、添加和完整性测试等操作。也可以按下文从源码构建。
 
