@@ -70,7 +70,10 @@ private:
                        const zipdesk::ExtractResult& result = {});
     void showTransferResult(const QString& verb, const QString& directory, bool skippedExisting,
                             const zipdesk::ExtractResult& result);
-    void showExtractIssue(const QString& title, const QString& message, const QString& directory, bool failed);
+    void showExtractIssue(const QString& title, const QString& message, const QString& directory, bool failed,
+                          const QString& details = {});
+    // Starts tracking counts the service measures if the next extraction stops early.
+    std::shared_ptr<std::optional<zipdesk::ExtractResult>> trackInterrupted();
     void returnHome();
     void showSettings();
     bool isShellAction() const;
@@ -205,6 +208,7 @@ private:
     std::function<void()> m_onSuccess;
     QString m_activeOperation;
     QString m_extractOutputDir;
+    std::shared_ptr<std::optional<zipdesk::ExtractResult>> m_interrupted;
     bool m_busy = false;
     bool m_closeAfterJob = false;
     bool m_inDrag = false;

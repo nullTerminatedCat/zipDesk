@@ -3,11 +3,13 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <random>
 #include <string>
 #include <vector>
@@ -206,6 +208,38 @@ void testPerItemChoices(zipdesk::ArchiveService& service, const fs::path& root) 
               mixed.skipped.front() == L"b.txt" && mixed.missing.empty(),
           "per-item result counts every decision");
 
+    // Cancelled before anything is written: every decision is still accounted for.
+    const fs::path stopped = root / "stopped";
+    for (const char* name : {"a.txt", "b.txt", "c.txt"}) writeFile(stopped / name, "OLD");
+    zipdesk::ExtractRequest stopRequest = request;
+    stopRequest.outputDir = stopped.wstring();
+    std::atomic<bool> stopCancel{false};
+    zipdesk::OperationHooks stopHooks;
+    stopHooks.cancel = &stopCancel;
+    stopHooks.onTotal = [&stopCancel](std::uint64_t) { stopCancel.store(true); };
+    std::optional<zipdesk::ExtractResult> stopCounts;
+    bool stopCancelled = false;
+    try {
+        service.extract(stopRequest, stopHooks, &stopCounts);
+    } catch (const zipdesk::ArchiveError& error) {
+        stopCancelled = error.kind() == zipdesk::ErrorKind::Cancelled;
+    }
+    const auto listed = [](const std::vector<std::wstring>& paths, const wchar_t* name) {
+        return std::find(paths.begin(), paths.end(), std::wstring(name)) != paths.end();
+    };
+    check(stopCancelled && stopCounts.has_value(), "cancelled per-item extraction reports measured counts");
+    if (stopCounts) {
+        const std::size_t accounted = stopCounts->written + stopCounts->overwritten + stopCounts->keptCopies.size() +
+                                      stopCounts->skipped.size() + stopCounts->missing.size();
+        check(accounted == 4 && stopCounts->overwritten == 0 && stopCounts->keptCopies.empty() &&
+                  stopCounts->skipped.size() == 1 && stopCounts->skipped.front() == L"b.txt" &&
+                  listed(stopCounts->missing, L"a.txt") && listed(stopCounts->missing, L"c.txt"),
+              "cancelled per-item counts list skipped and unwritten files");
+    }
+    check(readFile(stopped / "a.txt") == "OLD" && readFile(stopped / "b.txt") == "OLD" &&
+              readFile(stopped / "c.txt") == "OLD" && !fs::exists(stopped / "c (2).txt"),
+          "cancelled per-item extraction leaves existing files untouched");
+
     // Only skipped conflicts selected: nothing may be extracted (an empty index list means "all").
     const fs::path onlySkip = root / "only-skip";
     writeFile(onlySkip / "a.txt", "OLD");
@@ -317,12 +351,16 @@ void testOverwriteAndCancel(zipdesk::ArchiveService& service, const fs::path& ro
     extractHooks.onTotal = [&extractCancel](std::uint64_t) { extractCancel.store(true); };
     overwrite.relativePaths = {helloPath};
     bool extractCancelled = false;
+    std::optional<zipdesk::ExtractResult> cancelledCounts;
     try {
-        service.extract(overwrite, extractHooks);
+        service.extract(overwrite, extractHooks, &cancelledCounts);
     } catch (const zipdesk::ArchiveError& error) {
         extractCancelled = error.kind() == zipdesk::ErrorKind::Cancelled;
     }
     check(extractCancelled, "extraction can be cancelled");
+    check(cancelledCounts && cancelledCounts->written == 0 && cancelledCounts->overwritten == 0 &&
+              cancelledCounts->missing.size() == 1 && cancelledCounts->missing.front() == helloPath,
+          "cancelled extraction reports the untouched existing file as not written");
     check(readFile(target) == "PRESERVE", "cancelled extraction keeps files in an existing destination");
     const fs::path shared = root / "cancelled-with-user-file";
     zipdesk::ExtractRequest cancelFresh = overwrite;

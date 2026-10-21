@@ -128,6 +128,11 @@ public:
 
     ArchiveInfo read(const std::wstring& archivePath, std::wstring password, const OperationHooks& hooks) const;
     ExtractResult extract(const ExtractRequest& request, const OperationHooks& hooks) const;
+    // Same as above; when the extraction fails or is cancelled after it started
+    // writing, `interrupted` receives the counts measured on disk at that point
+    // (files not written are listed in `missing`) before the error is rethrown.
+    ExtractResult extract(const ExtractRequest& request, const OperationHooks& hooks,
+                          std::optional<ExtractResult>* interrupted) const;
     void move(const ExtractRequest& request, const OperationHooks& hooks) const;
     void compress(const CompressRequest& request, const OperationHooks& hooks) const;
     void append(const AppendRequest& request, const OperationHooks& hooks) const;

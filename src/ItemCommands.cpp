@@ -305,8 +305,9 @@ void MainWindow::extractEntries(const std::vector<zipdesk::ArchiveEntry>& entrie
     request.removeOutputOnCancel = created;
     if (checkConflicts) m_extractOutputDir = directory;
     if (outcome) outcome->skippedAll = request.overwrite == zipdesk::OverwritePolicy::Skip;
-    begin(title, [this, request, outcome](const zipdesk::OperationHooks& hooks) {
-        zipdesk::ExtractResult result = m_service.extract(request, hooks);
+    const auto interrupted = trackInterrupted();
+    begin(title, [this, request, outcome, interrupted](const zipdesk::OperationHooks& hooks) {
+        zipdesk::ExtractResult result = m_service.extract(request, hooks, interrupted.get());
         if (outcome) outcome->result = std::move(result);
     }, after);
 }

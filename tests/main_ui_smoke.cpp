@@ -114,13 +114,16 @@ bool testExtractResult(QApplication& app, const QString& root, const QString& sc
         if (!QDir().mkpath(output) || !write(target, "existing")) return false;
     } else if (mode == "failure") {
         if (!write(output, "keep")) return false;
+    } else if (mode == "blocked") {
+        // A folder named like an archive file makes that one file fail mid-extraction.
+        if (!QDir().mkpath(target) || !write(QDir(target).filePath("blocker"), "keep")) return false;
     } else if (mode != "success" && mode != "directory" && mode != "empty") return false;
 
     bool conflictSeen = false;
     bool resultSeen = false;
     bool valid = true;
     const QString expectedTitle = mode == "cancel" ? "解压已取消"
-        : (mode == "failure" || mode == "empty") ? "解压未完成" : "解压完成";
+        : (mode == "failure" || mode == "empty" || mode == "blocked") ? "解压未完成" : "解压完成";
     zipdesk::LaunchCommand launch;
     launch.action = windowEntry ? zipdesk::LaunchAction::Open : smart ? zipdesk::LaunchAction::SmartExtract : zipdesk::LaunchAction::ExtractToFolder;
     launch.paths = {request.outputPath};
@@ -175,14 +178,14 @@ bool testExtractResult(QApplication& app, const QString& root, const QString& sc
             valid = valid && box->informativeText().contains("1 个同名项目") &&
                 box->detailedText().contains("sample.txt") &&
                 box->detailedText().contains("6 字节") &&
-                box->detailedText().contains("8 字节") &&
+                box->detailedText().contains(mode == "blocked" ? "文件夹" : "8 字节") &&
                 box->defaultButton() && box->defaultButton()->text() == "取消" &&
                 box->escapeButton() && box->escapeButton()->text() == "取消";
             if (qEnvironmentVariableIsSet("ZIPDESK_UI_CAPTURE"))
                 box->grab().save(QDir(QCoreApplication::applicationDirPath()).filePath("ui-conflict-preview.png"));
             valid = valid && box->informativeText().contains("保留两者");
             const QString choice = mode == "skip" ? "全部跳过" : mode == "keep" ? "保留两者"
-                : mode == "pick" ? "逐项选择…" : "取消";
+                : mode == "pick" ? "逐项选择…" : mode == "blocked" ? "全部覆盖" : "取消";
             if (mode == "cancel")
                 valid = write(QDir(output).filePath("user.txt"), "user") && valid;
             for (auto* button : box->buttons()) {
@@ -211,6 +214,17 @@ bool testExtractResult(QApplication& app, const QString& root, const QString& sc
                 !box->text().contains("跳过");
         if (mode == "skip" && qEnvironmentVariableIsSet("ZIPDESK_UI_CAPTURE"))
             box->grab().save(QDir(QCoreApplication::applicationDirPath()).filePath("ui-extract-counts.png"));
+        if (mode == "blocked") {
+            // Counts are measured on disk after the failure, not guessed.
+            valid = valid && box->text().contains("已核对目标目录") && box->text().contains("请检查目标目录后重试") &&
+                !box->text().contains("目标目录可能已有部分文件");
+            if (qEnvironmentVariableIsSet("ZIPDESK_UI_CAPTURE")) {
+                box->grab().save(QDir(QCoreApplication::applicationDirPath()).filePath("ui-extract-interrupted.png"));
+                QFile dump(QDir(QCoreApplication::applicationDirPath()).filePath("ui-extract-interrupted.txt"));
+                if (dump.open(QIODevice::WriteOnly))
+                    dump.write((box->text() + "\n----\n" + box->detailedText()).toUtf8());
+            }
+        }
         if (mode == "keep")
             valid = valid && box->text().contains("保留两者") && box->text().contains("sample (2).txt") &&
                 box->detailedText().contains("sample (2).txt");
@@ -240,12 +254,14 @@ bool testExtractResult(QApplication& app, const QString& root, const QString& sc
         return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
     };
     valid = valid && code == 0 && resultSeen &&
-        conflictSeen == (mode == "skip" || mode == "cancel" || mode == "keep" || mode == "pick") &&
+        conflictSeen == (mode == "skip" || mode == "cancel" || mode == "keep" || mode == "pick" || mode == "blocked") &&
         pickerSeen == (mode == "pick");
     if (mode == "failure") {
         valid = valid && read(output) == "keep";
     } else if (mode == "empty") {
         valid = valid && !QFile::exists(QDir(root).filePath("sample"));
+    } else if (mode == "blocked") {
+        valid = valid && QFileInfo(target).isDir() && read(QDir(target).filePath("blocker")) == "keep";
     } else {
         valid = valid && read(target) == ((mode == "success" || mode == "directory" || mode == "pick") ? "sample" : "existing");
         if (mode == "keep") valid = valid && read(QDir(output).filePath("sample (2).txt")) == "sample";

@@ -1651,6 +1651,7 @@ void MainWindow::begin(const QString& title,
 void MainWindow::onSucceeded() {
     m_activeOperation.clear();
     m_extractOutputDir.clear();
+    m_interrupted.reset();
     m_progress->hide();
     setBusy(false);
     if (m_inDrag) {
@@ -1673,6 +1674,34 @@ void MainWindow::onSucceeded() {
 }
 
 namespace {
+QString extractPathList(const QString& heading, const std::vector<std::wstring>& paths);
+
+// Counts measured on disk after a failed or cancelled extraction or copy. Empty when
+// the job stopped before anything could be checked.
+QString interruptedSummary(const std::shared_ptr<std::optional<zipdesk::ExtractResult>>& interrupted,
+                           QString* details) {
+    if (!interrupted || !interrupted->has_value()) return {};
+    const zipdesk::ExtractResult& result = **interrupted;
+    const std::size_t touched = result.written + result.overwritten + result.keptCopies.size();
+    const std::size_t total = touched + result.skipped.size() + result.missing.size();
+    if (total == 0) return {};
+    QStringList counts;
+    if (result.written > 0) counts << QString("已写出 %1 个新文件").arg(result.written);
+    if (result.overwritten > 0) counts << QString("覆盖 %1 个同名文件").arg(result.overwritten);
+    if (!result.keptCopies.empty()) counts << QString("另存 %1 个同名文件").arg(result.keptCopies.size());
+    if (!result.skipped.empty()) counts << QString("跳过 %1 个同名文件").arg(result.skipped.size());
+    if (!result.missing.empty()) counts << QString("%1 个文件未写出").arg(result.missing.size());
+    QString text = QString("已核对目标目录，共 %1 个文件：%2。").arg(total).arg(counts.join("，"));
+    text += touched > 0 ? QString("\n中断时正在写入的文件可能不完整。")
+                        : QString("\n目标目录中没有新写出或被替换的文件。");
+    QStringList lists;
+    if (!result.keptCopies.empty()) lists << extractPathList("另存为新名称的文件：", result.keptCopies);
+    if (!result.skipped.empty()) lists << extractPathList("跳过的同名文件：", result.skipped);
+    if (!result.missing.empty()) lists << extractPathList("未写出的文件：", result.missing);
+    if (details) *details = lists.join("\n\n");
+    return text;
+}
+
 QString operationVerb(const QString& activeOperation) {
     if (activeOperation == "正在移动") return QStringLiteral("移动");
     if (activeOperation == "正在复制") return QStringLiteral("复制");
@@ -1683,6 +1712,7 @@ QString operationVerb(const QString& activeOperation) {
 void MainWindow::onFailed(const QString& message) {
     const QString verb = operationVerb(m_activeOperation);
     const QString extractDir = m_extractOutputDir;
+    const auto interrupted = std::exchange(m_interrupted, nullptr);
     m_extractOutputDir.clear();
     m_activeOperation.clear();
     m_progress->hide();
@@ -1701,8 +1731,12 @@ void MainWindow::onFailed(const QString& message) {
     if (extractDir.isEmpty()) {
         QMessageBox::warning(isShellExtract() ? nullptr : this, "青匣", message);
     } else {
-        showExtractIssue(verb + "未完成", message + "\n\n目标目录可能已有部分文件，请检查后重试。",
-                         extractDir, true);
+        QString details;
+        const QString measured = interruptedSummary(interrupted, &details);
+        showExtractIssue(verb + "未完成",
+                         message + "\n\n" + (measured.isEmpty() ? QString("目标目录可能已有部分文件，请检查后重试。")
+                                                                : measured + "\n请检查目标目录后重试。"),
+                         extractDir, true, details);
     }
     if (isShellAction()) {
         QCoreApplication::quit();
@@ -1712,6 +1746,7 @@ void MainWindow::onFailed(const QString& message) {
 void MainWindow::onCancelled() {
     const QString verb = operationVerb(m_activeOperation);
     const QString extractDir = m_extractOutputDir;
+    const auto interrupted = std::exchange(m_interrupted, nullptr);
     m_extractOutputDir.clear();
     m_activeOperation.clear();
     m_progress->hide();
@@ -1727,7 +1762,10 @@ void MainWindow::onCancelled() {
     } else if (extractDir.isEmpty()) {
         statusBar()->showMessage("已取消");
     } else {
-        showExtractIssue(verb + "已取消", "目标目录可能已有部分文件，请检查。", extractDir, false);
+        QString details;
+        const QString measured = interruptedSummary(interrupted, &details);
+        showExtractIssue(verb + "已取消", measured.isEmpty() ? QString("目标目录可能已有部分文件，请检查。") : measured,
+                         extractDir, false, details);
     }
     if (isShellAction()) {
         QCoreApplication::quit();
@@ -1994,12 +2032,18 @@ void MainWindow::showTransferResult(const QString& verb, const QString& director
         QDesktopServices::openUrl(QUrl::fromLocalFile(directory));
     }
 }
+std::shared_ptr<std::optional<zipdesk::ExtractResult>> MainWindow::trackInterrupted() {
+    m_interrupted = std::make_shared<std::optional<zipdesk::ExtractResult>>();
+    return m_interrupted;
+}
+
 void MainWindow::showExtractIssue(const QString& title, const QString& message,
-                                  const QString& directory, bool failed) {
+                                  const QString& directory, bool failed, const QString& details) {
     QMessageBox box(isShellExtract() ? nullptr : this);
     box.setIcon(failed ? QMessageBox::Warning : QMessageBox::Information);
     box.setWindowTitle(title);
     box.setText(message + "\n\n目标目录：\n" + QDir::toNativeSeparators(directory));
+    if (!details.isEmpty()) box.setDetailedText(details);
     QPushButton* open = nullptr;
     if (QDir(directory).exists()) {
         open = box.addButton("打开目标文件夹", QMessageBox::ActionRole);
@@ -2169,10 +2213,11 @@ void MainWindow::extractArchive(bool selectedOnly, bool namedFolder) {
         const QString finishedDir = QString::fromStdWString(outputDir);
         const auto skipped = std::make_shared<std::atomic_bool>(false);
         const auto kept = std::make_shared<zipdesk::ExtractResult>();
+        const auto interrupted = trackInterrupted();
         m_extractOutputDir = finishedDir;
         begin(
             "正在解压",
-            [this, archive, outputDir, created, skipped, kept](const zipdesk::OperationHooks& hooks) {
+            [this, archive, outputDir, created, skipped, kept, interrupted](const zipdesk::OperationHooks& hooks) {
                 const zipdesk::ArchiveInfo info = m_service.read(archive, L"", hooks);
                 zipdesk::OverwritePolicy policy = zipdesk::OverwritePolicy::Overwrite;
                 std::map<std::wstring, zipdesk::OverwritePolicy> itemChoices;
@@ -2198,7 +2243,7 @@ void MainWindow::extractArchive(bool selectedOnly, bool namedFolder) {
                 request.itemChoices = itemChoices;
                 request.removeOutputOnCancel = created;
                 request.relativePaths = relativePathsOf(info.entries, {});
-                *kept = m_service.extract(request, hooks);
+                *kept = m_service.extract(request, hooks, interrupted.get());
             },
             [this, finishedDir, skipped, kept]() {
                 finishExtract(finishedDir, skipped->load(), *kept);
@@ -2263,11 +2308,12 @@ void MainWindow::extractArchive(bool selectedOnly, bool namedFolder) {
     const QString finishedDir = QString::fromStdWString(outputDir);
     const bool skippedExisting = policy == zipdesk::OverwritePolicy::Skip;
     const auto kept = std::make_shared<zipdesk::ExtractResult>();
+    const auto interrupted = trackInterrupted();
     m_extractOutputDir = finishedDir;
     begin(
         "正在解压",
-        [this, request, kept](const zipdesk::OperationHooks& hooks) {
-            *kept = m_service.extract(request, hooks);
+        [this, request, kept, interrupted](const zipdesk::OperationHooks& hooks) {
+            *kept = m_service.extract(request, hooks, interrupted.get());
         },
         [this, finishedDir, skippedExisting, kept]() {
             finishExtract(finishedDir, skippedExisting, *kept);
@@ -2280,9 +2326,10 @@ void MainWindow::smartExtract(const QString& path) {
     const auto result = std::make_shared<QString>(QFileInfo(path).absolutePath());
     const auto skipped = std::make_shared<std::atomic_bool>(false);
     const auto kept = std::make_shared<zipdesk::ExtractResult>();
+    const auto interrupted = trackInterrupted();
     m_extractOutputDir = *result;
     begin("正在解压",
-        [this, archive, password, result, skipped, kept](const zipdesk::OperationHooks& hooks) {
+        [this, archive, password, result, skipped, kept, interrupted](const zipdesk::OperationHooks& hooks) {
             const auto info = m_service.read(archive, password, hooks);
             const auto destination = zipdesk::smartExtractDestination(archive, info.entries);
             QMetaObject::invokeMethod(this, [&]() {
@@ -2314,7 +2361,7 @@ void MainWindow::smartExtract(const QString& path) {
             request.itemChoices = itemChoices;
             request.removeOutputOnCancel = created;
             request.relativePaths = relativePathsOf(info.entries, {});
-            *kept = m_service.extract(request, hooks);
+            *kept = m_service.extract(request, hooks, interrupted.get());
         },
         [this, result, skipped, kept]() { finishExtract(*result, skipped->load(), *kept); });
 }
@@ -2330,10 +2377,11 @@ void MainWindow::shellExtract(bool namedFolder) {
     const QString finishedDir = QString::fromStdWString(destination.wstring());
     const auto skipped = std::make_shared<std::atomic_bool>(false);
     const auto kept = std::make_shared<zipdesk::ExtractResult>();
+    const auto interrupted = trackInterrupted();
     m_extractOutputDir = finishedDir;
     begin(
         "正在解压",
-        [this, archive, namedFolder, skipped, kept](const zipdesk::OperationHooks& hooks) {
+        [this, archive, namedFolder, skipped, kept, interrupted](const zipdesk::OperationHooks& hooks) {
             const zipdesk::ArchiveInfo info = m_service.read(archive, L"", hooks);
             bool created = false;
             std::wstring outputDir;
@@ -2366,7 +2414,7 @@ void MainWindow::shellExtract(bool namedFolder) {
             request.itemChoices = itemChoices;
             request.removeOutputOnCancel = created;
             request.relativePaths = relativePathsOf(info.entries, {});
-            *kept = m_service.extract(request, hooks);
+            *kept = m_service.extract(request, hooks, interrupted.get());
         },
         [this, finishedDir, skipped, kept]() { finishExtract(finishedDir, skipped->load(), *kept); });
 }

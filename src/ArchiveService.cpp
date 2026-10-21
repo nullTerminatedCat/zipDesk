@@ -308,6 +308,14 @@ void cleanupExtract(const ExtractRequest& request) {
     fs::remove(root, error);  // Preserve files added during extraction.
 }
 
+void appendResult(ExtractResult& into, const ExtractResult& from) {
+    into.written += from.written;
+    into.overwritten += from.overwritten;
+    into.keptCopies.insert(into.keptCopies.end(), from.keptCopies.begin(), from.keptCopies.end());
+    into.skipped.insert(into.skipped.end(), from.skipped.begin(), from.skipped.end());
+    into.missing.insert(into.missing.end(), from.missing.begin(), from.missing.end());
+}
+
 std::optional<std::wstring> askAgain(const OperationHooks& hooks, int attempt) {
     if (!hooks.askPassword) {
         return std::nullopt;
@@ -605,6 +613,11 @@ std::wstring keepBothName(const std::wstring& outputDir, const std::wstring& rel
 }
 
 ExtractResult ArchiveService::extract(const ExtractRequest& request, const OperationHooks& hooks) const {
+    return extract(request, hooks, nullptr);
+}
+
+ExtractResult ArchiveService::extract(const ExtractRequest& request, const OperationHooks& hooks,
+                                      std::optional<ExtractResult>* interrupted) const {
     if (!fs::exists(request.archivePath)) {
         throw ArchiveError(ErrorKind::Other, L"找不到压缩包。");
     }
@@ -650,18 +663,44 @@ ExtractResult ArchiveService::extract(const ExtractRequest& request, const Opera
             }
         }
         ExtractResult result;
-        // An empty index list means "everything", so only run passes with items.
-        if (!keepPass.indices.empty()) {
-            result = extract(keepPass, hooks);
-        }
-        if (!overwritePass.indices.empty()) {
-            if (hooks.cancel && hooks.cancel->load()) {
-                throw ArchiveError(ErrorKind::Cancelled, L"已取消");
+        // If a pass stops early, report finished passes, the measured part of the
+        // running pass, and every file of a pass that never started as not written.
+        std::optional<ExtractResult> inner;
+        const std::vector<std::wstring>* running = nullptr;
+        std::vector<std::wstring> notStarted = overwritePass.relativePaths;
+        try {
+            // An empty index list means "everything", so only run passes with items.
+            if (!keepPass.indices.empty()) {
+                running = &keepPass.relativePaths;
+                result = extract(keepPass, hooks, &inner);
+                running = nullptr;
             }
-            const ExtractResult replaced = extract(overwritePass, hooks);
-            result.overwritten += replaced.overwritten;
-            result.written += replaced.written;
-            result.missing.insert(result.missing.end(), replaced.missing.begin(), replaced.missing.end());
+            if (!overwritePass.indices.empty()) {
+                if (hooks.cancel && hooks.cancel->load()) {
+                    throw ArchiveError(ErrorKind::Cancelled, L"已取消");
+                }
+                inner.reset();
+                running = &overwritePass.relativePaths;
+                notStarted.clear();
+                const ExtractResult replaced = extract(overwritePass, hooks, &inner);
+                running = nullptr;
+                result.overwritten += replaced.overwritten;
+                result.written += replaced.written;
+                result.missing.insert(result.missing.end(), replaced.missing.begin(), replaced.missing.end());
+            }
+        } catch (...) {
+            if (interrupted) {
+                ExtractResult partial = result;
+                if (running && inner) {
+                    appendResult(partial, *inner);
+                } else if (running) {
+                    partial.missing.insert(partial.missing.end(), running->begin(), running->end());
+                }
+                partial.missing.insert(partial.missing.end(), notStarted.begin(), notStarted.end());
+                partial.skipped.insert(partial.skipped.end(), skippedPaths.begin(), skippedPaths.end());
+                *interrupted = std::move(partial);
+            }
+            throw;
         }
         result.skipped.insert(result.skipped.end(), skippedPaths.begin(), skippedPaths.end());
         return result;
@@ -687,62 +726,82 @@ ExtractResult ArchiveService::extract(const ExtractRequest& request, const Opera
         ExtractRequest first = request;
         first.password = info.password;
         first.overwrite = OverwritePolicy::Skip;
-        const ExtractResult firstPass = extract(first, hooks);
         ExtractResult result;
-        result.written = firstPass.written;
-        result.missing = firstPass.missing;
-        if (conflictIndices.empty()) {
-            return result;
-        }
-        if (hooks.cancel && hooks.cancel->load()) {
-            throw ArchiveError(ErrorKind::Cancelled, L"已取消");
-        }
-        fs::path staging;
-        const auto seed = static_cast<unsigned long long>(
-            std::chrono::steady_clock::now().time_since_epoch().count());
-        for (int attempt = 0; attempt < 100 && staging.empty(); ++attempt) {
-            const fs::path candidate = root / (L".qingxia-keep-" + std::to_wstring(seed + attempt));
-            std::error_code error;
-            if (fs::create_directory(candidate, error) && !error) {
-                staging = candidate;
+        std::optional<ExtractResult> firstPartial;
+        bool firstDone = false;
+        try {
+            const ExtractResult firstPass = extract(first, hooks, &firstPartial);
+            firstDone = true;
+            result.written = firstPass.written;
+            result.missing = firstPass.missing;
+            if (conflictIndices.empty()) {
+                return result;
             }
-        }
-        if (staging.empty()) {
-            throw ArchiveError(ErrorKind::Other, L"无法创建保留两者所需的临时文件夹。");
-        }
-        struct StagingGuard {
-            fs::path path;
-            ~StagingGuard() {
-                std::error_code error;
-                fs::remove_all(path, error);  // Private folder created above.
-            }
-        } guard{staging};
-        ExtractRequest second = first;
-        second.outputDir = staging.wstring();
-        second.indices = conflictIndices;
-        second.relativePaths = conflictPaths;
-        second.overwrite = OverwritePolicy::Overwrite;
-        second.removeOutputOnCancel = false;
-        extract(second, hooks);
-        for (const std::wstring& path : conflictPaths) {
             if (hooks.cancel && hooks.cancel->load()) {
                 throw ArchiveError(ErrorKind::Cancelled, L"已取消");
             }
-            const fs::path from = staging / path;
-            if (!fs::is_regular_file(from)) {
-                throw ArchiveError(ErrorKind::Other, L"未能写出同名文件的副本：" + path);
+            fs::path staging;
+            const auto seed = static_cast<unsigned long long>(
+                std::chrono::steady_clock::now().time_since_epoch().count());
+            for (int attempt = 0; attempt < 100 && staging.empty(); ++attempt) {
+                const fs::path candidate = root / (L".qingxia-keep-" + std::to_wstring(seed + attempt));
+                std::error_code error;
+                if (fs::create_directory(candidate, error) && !error) {
+                    staging = candidate;
+                }
             }
-            const std::wstring renamed = keepBothName(request.outputDir, path);
-            std::error_code error;
-            fs::create_directories((root / renamed).parent_path(), error);
-            error.clear();
-            fs::rename(from, root / renamed, error);
-            if (error) {
-                throw ArchiveError(ErrorKind::Other, L"无法保存同名文件的副本：" + renamed);
+            if (staging.empty()) {
+                throw ArchiveError(ErrorKind::Other, L"无法创建保留两者所需的临时文件夹。");
             }
-            result.keptCopies.push_back(renamed);
+            struct StagingGuard {
+                fs::path path;
+                ~StagingGuard() {
+                    std::error_code error;
+                    fs::remove_all(path, error);  // Private folder created above.
+                }
+            } guard{staging};
+            ExtractRequest second = first;
+            second.outputDir = staging.wstring();
+            second.indices = conflictIndices;
+            second.relativePaths = conflictPaths;
+            second.overwrite = OverwritePolicy::Overwrite;
+            second.removeOutputOnCancel = false;
+            extract(second, hooks);
+            for (const std::wstring& path : conflictPaths) {
+                if (hooks.cancel && hooks.cancel->load()) {
+                    throw ArchiveError(ErrorKind::Cancelled, L"已取消");
+                }
+                const fs::path from = staging / path;
+                if (!fs::is_regular_file(from)) {
+                    throw ArchiveError(ErrorKind::Other, L"未能写出同名文件的副本：" + path);
+                }
+                const std::wstring renamed = keepBothName(request.outputDir, path);
+                std::error_code error;
+                fs::create_directories((root / renamed).parent_path(), error);
+                error.clear();
+                fs::rename(from, root / renamed, error);
+                if (error) {
+                    throw ArchiveError(ErrorKind::Other, L"无法保存同名文件的副本：" + renamed);
+                }
+                result.keptCopies.push_back(renamed);
+            }
+            return result;
+        } catch (...) {
+            if (interrupted && (firstDone || firstPartial)) {
+                ExtractResult partial = result;
+                if (!firstDone) {
+                    // The first pass skipped conflicts on purpose; they are listed below.
+                    partial.written = firstPartial->written;
+                    partial.missing = firstPartial->missing;
+                }
+                // Copies are saved in conflict order, so the rest were never written.
+                for (std::size_t i = partial.keptCopies.size(); i < conflictPaths.size(); ++i) {
+                    partial.missing.push_back(conflictPaths[i]);
+                }
+                *interrupted = std::move(partial);
+            }
+            throw;
         }
-        return result;
     }
     ExtractRequest current = request;
     // The source archive must never become one of its own extracted outputs.
@@ -771,10 +830,21 @@ ExtractResult ArchiveService::extract(const ExtractRequest& request, const Opera
     // actually written, replaced or skipped instead of estimating it.
     const fs::path outputRoot(current.outputDir);
     std::vector<bool> existedBefore;
+    std::vector<std::pair<std::uintmax_t, fs::file_time_type>> stampBefore;
     existedBefore.reserve(paths.size());
+    stampBefore.reserve(paths.size());
     for (const std::wstring& path : paths) {
         std::error_code error;
-        existedBefore.push_back(!path.empty() && fs::is_regular_file(outputRoot / path, error));
+        const fs::path target = outputRoot / path;
+        const bool existed = !path.empty() && fs::is_regular_file(target, error);
+        existedBefore.push_back(existed);
+        std::uintmax_t size = 0;
+        fs::file_time_type time{};
+        if (existed) {
+            size = fs::file_size(target, error);
+            time = fs::last_write_time(target, error);
+        }
+        stampBefore.emplace_back(size, time);
     }
     const auto summarize = [&]() {
         ExtractResult result;
@@ -803,45 +873,90 @@ ExtractResult ArchiveService::extract(const ExtractRequest& request, const Opera
         }
         return result;
     };
-    for (int attempt = 0; attempt < 5; ++attempt) {
-        try {
-            const ArchiveFormat format = formatFromPath(current.archivePath);
-            fs::create_directories(current.outputDir);
-            bit7z::BitFileExtractor extractor{m_library->library, toInFormat(format)};
-            extractor.setOverwriteMode(current.overwrite == OverwritePolicy::Skip ? bit7z::OverwriteMode::Skip
-                                                                                   : bit7z::OverwriteMode::Overwrite);
-            if (!current.password.empty()) {
-                extractor.setPassword(current.password);
+    // After a failure or cancel nothing is assumed: an existing file counts as
+    // overwritten only if its size or modification time changed.
+    const auto summarizeInterrupted = [&]() {
+        ExtractResult result;
+        for (std::size_t i = 0; i < paths.size(); ++i) {
+            if (paths[i].empty()) {
+                continue;
             }
-            bindHooks(extractor, hooks);
-            if (current.indices.empty()) {
-                extractor.extract(current.archivePath, current.outputDir);
+            const fs::path target = outputRoot / paths[i];
+            std::error_code error;
+            if (existedBefore[i]) {
+                if (current.overwrite == OverwritePolicy::Skip) {
+                    result.skipped.push_back(paths[i]);
+                    continue;
+                }
+                const std::uintmax_t size = fs::file_size(target, error);
+                const bool sizeRead = !error;
+                error.clear();
+                const fs::file_time_type time = fs::last_write_time(target, error);
+                if (sizeRead && !error && (size != stampBefore[i].first || time != stampBefore[i].second)) {
+                    ++result.overwritten;
+                } else {
+                    result.missing.push_back(paths[i]);
+                }
+                continue;
+            }
+            const fs::file_status status = fs::symlink_status(target, error);
+            if (fs::is_directory(status)) {
+                continue;
+            }
+            if (fs::exists(status)) {
+                ++result.written;
             } else {
-                extractor.extractItems(current.archivePath, current.indices, current.outputDir);
+                result.missing.push_back(paths[i]);
             }
-            return summarize();
-        } catch (const bit7z::BitException& error) {
-            ArchiveError translated(ErrorKind::Other, L"");
-            try {
-                rethrowBit(error, hooks.cancel != nullptr && hooks.cancel->load());
-            } catch (const ArchiveError& caught) {
-                translated = caught;
-            }
-            if (translated.kind() == ErrorKind::Cancelled) {
-                cleanupExtract(current);
-                throw translated;
-            }
-            if (translated.kind() != ErrorKind::Password || !hooks.askPassword) {
-                throw translated;
-            }
-            const auto next = askAgain(hooks, attempt);
-            if (!next) {
-                throw ArchiveError(ErrorKind::Cancelled, L"已取消");
-            }
-            current.password = *next;
         }
+        return result;
+    };
+    try {
+        for (int attempt = 0; attempt < 5; ++attempt) {
+            try {
+                const ArchiveFormat format = formatFromPath(current.archivePath);
+                fs::create_directories(current.outputDir);
+                bit7z::BitFileExtractor extractor{m_library->library, toInFormat(format)};
+                extractor.setOverwriteMode(current.overwrite == OverwritePolicy::Skip ? bit7z::OverwriteMode::Skip
+                                                                                       : bit7z::OverwriteMode::Overwrite);
+                if (!current.password.empty()) {
+                    extractor.setPassword(current.password);
+                }
+                bindHooks(extractor, hooks);
+                if (current.indices.empty()) {
+                    extractor.extract(current.archivePath, current.outputDir);
+                } else {
+                    extractor.extractItems(current.archivePath, current.indices, current.outputDir);
+                }
+                return summarize();
+            } catch (const bit7z::BitException& error) {
+                ArchiveError translated(ErrorKind::Other, L"");
+                try {
+                    rethrowBit(error, hooks.cancel != nullptr && hooks.cancel->load());
+                } catch (const ArchiveError& caught) {
+                    translated = caught;
+                }
+                if (translated.kind() == ErrorKind::Cancelled) {
+                    cleanupExtract(current);
+                    throw translated;
+                }
+                if (translated.kind() != ErrorKind::Password || !hooks.askPassword) {
+                    throw translated;
+                }
+                const auto next = askAgain(hooks, attempt);
+                if (!next) {
+                    throw ArchiveError(ErrorKind::Cancelled, L"已取消");
+                }
+                current.password = *next;
+            }
+        }
+        throw ArchiveError(ErrorKind::Password, L"密码不正确");
+    } catch (...) {
+        if (interrupted) {
+            *interrupted = summarizeInterrupted();
+        }
+        throw;
     }
-    throw ArchiveError(ErrorKind::Password, L"密码不正确");
 }
 
 void ArchiveService::move(const ExtractRequest& request, const OperationHooks& hooks) const {
