@@ -84,6 +84,9 @@ private:
     void shellExtract(bool namedFolder);
     void shellCompress(zipdesk::ArchiveFormat format);
     void handleDropped(const QList<QUrl>& urls);
+    // Batch-extract archives chosen from a multi-item drop. namedFolder=false uses smart extract.
+    void extractDroppedArchives(const std::vector<std::wstring>& archives, bool namedFolder);
+    void promptDropped(const zipdesk::DropDecision& decision);
     void dragOutSelection();
     QList<QUrl> produceDragUrls(const QString& tempDir, const std::vector<std::uint32_t>& indices);
     void begin(const QString& title,

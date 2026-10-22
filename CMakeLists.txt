@@ -71,6 +71,8 @@ qt_add_executable(ZipDesk WIN32
     src/CompressDialog.hpp
     src/ConflictDialog.cpp
     src/ConflictDialog.hpp
+    src/MultiDropDialog.cpp
+    src/MultiDropDialog.hpp
     src/ShellIntegration.cpp
     src/ShellIntegration.hpp
     src/Cli.cpp
@@ -161,6 +163,8 @@ if(TARGET Qt6::Test)
         src/CompressDialog.hpp
         src/ConflictDialog.cpp
         src/ConflictDialog.hpp
+        src/MultiDropDialog.cpp
+        src/MultiDropDialog.hpp
         src/ShellIntegration.cpp
         src/ShellIntegration.hpp
         src/Lang.cpp

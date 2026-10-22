@@ -1,5 +1,6 @@
 #include "MainWindow.hpp"
 #include "ConflictDialog.hpp"
+#include "MultiDropDialog.hpp"
 
 #include "ArchiveJob.hpp"
 #include "CompressDialog.hpp"
@@ -2481,7 +2482,178 @@ void MainWindow::handleDropped(const QList<QUrl>& urls) {
             createArchive(toStringList(decision.files));
         }
         break;
+    case zipdesk::DropAction::Prompt:
+        promptDropped(decision);
+        break;
     }
+}
+
+void MainWindow::promptDropped(const zipdesk::DropDecision& decision) {
+    MultiDropDialog dialog(static_cast<int>(decision.archives.size()),
+                           static_cast<int>(decision.files.size()), this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    switch (dialog.choice()) {
+    case MultiDropDialog::Choice::SmartExtractAll:
+        extractDroppedArchives(decision.archives, false);
+        break;
+    case MultiDropDialog::Choice::ExtractToFolders:
+        extractDroppedArchives(decision.archives, true);
+        break;
+    case MultiDropDialog::Choice::CreateArchive: {
+        QStringList all;
+        for (const std::wstring& path : decision.archives) {
+            all << QString::fromStdWString(path);
+        }
+        for (const std::wstring& path : decision.files) {
+            all << QString::fromStdWString(path);
+        }
+        if (!all.isEmpty()) {
+            createArchive(all);
+        }
+        break;
+    }
+    case MultiDropDialog::Choice::OpenFirst:
+        if (!decision.archives.empty()) {
+            openArchive(QString::fromStdWString(decision.archives.front()));
+        }
+        break;
+    case MultiDropDialog::Choice::Cancel:
+        break;
+    }
+}
+
+void MainWindow::extractDroppedArchives(const std::vector<std::wstring>& archives, bool namedFolder) {
+    if (archives.empty()) {
+        return;
+    }
+    const auto archiveList = std::make_shared<std::vector<std::wstring>>(archives);
+    const auto resultDirs = std::make_shared<QStringList>();
+    const auto processed = std::make_shared<int>(0);
+    const auto skipped = std::make_shared<std::atomic_bool>(false);
+    const auto kept = std::make_shared<zipdesk::ExtractResult>();
+    const auto interrupted = trackInterrupted();
+    const QString fallbackDir = QFileInfo(QString::fromStdWString(archives.front())).absolutePath();
+    m_extractOutputDir = fallbackDir;
+    const int total = static_cast<int>(archives.size());
+    begin(
+        total == 1 ? QStringLiteral("正在解压") : QStringLiteral("正在解压 (1/%1)").arg(total),
+        [this, archiveList, namedFolder, resultDirs, processed, skipped, kept, interrupted, total](
+            const zipdesk::OperationHooks& hooks) {
+            for (std::size_t i = 0; i < archiveList->size(); ++i) {
+                if (hooks.cancel != nullptr && hooks.cancel->load()) {
+                    throw zipdesk::ArchiveError(zipdesk::ErrorKind::Cancelled, L"已取消");
+                }
+                const std::wstring archive = (*archiveList)[i];
+                const QString label = total == 1
+                    ? QStringLiteral("正在解压")
+                    : QStringLiteral("正在解压 (%1/%2)").arg(static_cast<int>(i) + 1).arg(total);
+                QMetaObject::invokeMethod(
+                    this,
+                    [this, label, archive]() {
+                        m_progress->reset(label);
+                        m_extractOutputDir = QFileInfo(QString::fromStdWString(archive)).absolutePath();
+                    },
+                    Qt::BlockingQueuedConnection);
+
+                const zipdesk::ArchiveInfo info = m_service.read(archive, L"", hooks);
+                bool created = false;
+                std::wstring outputDir;
+                QString resultDir;
+                if (namedFolder) {
+                    outputDir = namedFolderFor(archive, &created);
+                    resultDir = QString::fromStdWString(outputDir);
+                } else {
+                    const auto destination = zipdesk::smartExtractDestination(archive, info.entries);
+                    outputDir = destination.outputDir;
+                    resultDir = QString::fromStdWString(destination.resultDir);
+                    created = std::filesystem::create_directories(destination.outputDir);
+                }
+                QMetaObject::invokeMethod(
+                    this, [this, resultDir]() { m_extractOutputDir = resultDir; }, Qt::BlockingQueuedConnection);
+
+                zipdesk::OverwritePolicy policy = zipdesk::OverwritePolicy::Overwrite;
+                std::map<std::wstring, zipdesk::OverwritePolicy> itemChoices;
+                if (zipdesk::hasConflicts(info.entries, {}, outputDir)) {
+                    std::optional<zipdesk::OverwritePolicy> choice;
+                    QMetaObject::invokeMethod(
+                        this,
+                        [&]() { choice = askOverwrite(info.entries, {}, outputDir, true, &itemChoices); },
+                        Qt::BlockingQueuedConnection);
+                    if (!choice) {
+                        if (created) {
+                            std::error_code error;
+                            std::filesystem::remove(outputDir, error);
+                        }
+                        throw zipdesk::ArchiveError(zipdesk::ErrorKind::Cancelled, L"已取消");
+                    }
+                    policy = *choice;
+                    if (policy == zipdesk::OverwritePolicy::Skip) {
+                        skipped->store(true);
+                    }
+                }
+
+                zipdesk::ExtractRequest request;
+                request.archivePath = archive;
+                request.outputDir = outputDir;
+                request.password = info.password;
+                request.overwrite = policy;
+                request.itemChoices = itemChoices;
+                request.removeOutputOnCancel = created;
+                request.relativePaths = relativePathsOf(info.entries, {});
+                const zipdesk::ExtractResult part = m_service.extract(request, hooks, interrupted.get());
+                kept->written += part.written;
+                kept->overwritten += part.overwritten;
+                kept->keptCopies.insert(kept->keptCopies.end(), part.keptCopies.begin(), part.keptCopies.end());
+                kept->skipped.insert(kept->skipped.end(), part.skipped.begin(), part.skipped.end());
+                kept->missing.insert(kept->missing.end(), part.missing.begin(), part.missing.end());
+                resultDirs->push_back(resultDir);
+                ++(*processed);
+            }
+        },
+        [this, resultDirs, processed, skipped, kept, fallbackDir, total]() {
+            QString directory = fallbackDir;
+            if (!resultDirs->isEmpty()) {
+                directory = resultDirs->front();
+                const QString firstParent = QFileInfo(resultDirs->front()).absolutePath();
+                for (const QString& dir : *resultDirs) {
+                    if (QFileInfo(dir).absolutePath() != firstParent) {
+                        directory = firstParent;
+                        break;
+                    }
+                }
+            }
+            if (total > 1) {
+                statusBar()->showMessage(QString("已解压 %1 个压缩包").arg(*processed));
+                QMessageBox box(this);
+                box.setWindowTitle("批量解压完成");
+                box.setIcon(QMessageBox::Information);
+                QStringList counts;
+                if (kept->written > 0) counts << QString("新写入 %1 个文件").arg(kept->written);
+                if (kept->overwritten > 0) counts << QString("覆盖 %1 个同名文件").arg(kept->overwritten);
+                if (!kept->keptCopies.empty()) counts << QString("另存 %1 个同名文件").arg(kept->keptCopies.size());
+                if (!kept->skipped.empty()) counts << QString("跳过 %1 个同名文件").arg(kept->skipped.size());
+                if (!kept->missing.empty()) counts << QString("%1 个文件未找到").arg(kept->missing.size());
+                QString summary = QString("已处理 %1 个压缩包。").arg(*processed);
+                if (!counts.isEmpty()) {
+                    summary += QString("\n共 %1。").arg(counts.join("，"));
+                }
+                if (skipped->load()) {
+                    summary += QStringLiteral("\n部分压缩包按“全部跳过”保留了已有同名文件。");
+                }
+                summary += QStringLiteral("\n目标目录示例：\n") + QDir::toNativeSeparators(directory);
+                box.setText(summary);
+                auto* open = box.addButton("打开目标文件夹", QMessageBox::ActionRole);
+                box.addButton("完成", QMessageBox::AcceptRole);
+                box.exec();
+                if (box.clickedButton() == open) {
+                    QDesktopServices::openUrl(QUrl::fromLocalFile(directory));
+                }
+            } else {
+                finishExtract(directory, skipped->load(), *kept);
+            }
+        });
 }
 
 void MainWindow::dragOutSelection() {

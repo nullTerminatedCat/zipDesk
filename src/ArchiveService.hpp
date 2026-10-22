@@ -22,7 +22,7 @@ enum class OverwritePolicy : int { Overwrite, Skip, KeepBoth };
 
 enum class ErrorKind : int { Password, Cancelled, InvalidPasswordCharset, Other };
 
-enum class DropAction : int { OpenArchive, AppendFiles, CreateArchive };
+enum class DropAction : int { OpenArchive, AppendFiles, CreateArchive, Prompt };
 
 class ArchiveError : public std::exception {
 public:
@@ -115,6 +115,7 @@ struct AppendRequest {
 struct DropDecision {
     DropAction action = DropAction::CreateArchive;
     std::wstring archivePath;
+    std::vector<std::wstring> archives;
     std::vector<std::wstring> files;
 };
 

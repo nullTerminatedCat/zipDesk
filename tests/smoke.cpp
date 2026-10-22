@@ -87,8 +87,19 @@ void testLaunchParser() {
 }
 
 void testDropDecision() {
-    const zipdesk::DropDecision open = zipdesk::decideDrop({L"C:\\a.zip", L"C:\\b.txt"}, false);
-    check(open.action == zipdesk::DropAction::OpenArchive && open.archivePath == L"C:\\a.zip", "archive drop opens");
+    const zipdesk::DropDecision open = zipdesk::decideDrop({L"C:\\a.zip"}, false);
+    check(open.action == zipdesk::DropAction::OpenArchive && open.archivePath == L"C:\\a.zip"
+              && open.archives.size() == 1,
+          "single archive drop opens");
+
+    const zipdesk::DropDecision mixed = zipdesk::decideDrop({L"C:\\a.zip", L"C:\\b.txt"}, false);
+    check(mixed.action == zipdesk::DropAction::Prompt && mixed.archives.size() == 1
+              && mixed.files.size() == 1 && mixed.archivePath == L"C:\\a.zip",
+          "archive plus file prompts");
+
+    const zipdesk::DropDecision multi = zipdesk::decideDrop({L"C:\\a.zip", L"C:\\b.7z", L"C:\\c.rar"}, false);
+    check(multi.action == zipdesk::DropAction::Prompt && multi.archives.size() == 3 && multi.files.empty(),
+          "multiple archives prompt");
 
     const zipdesk::DropDecision create = zipdesk::decideDrop({L"C:\\b.txt", L"C:\\dir"}, false);
     check(create.action == zipdesk::DropAction::CreateArchive && create.files.size() == 2, "files drop creates");

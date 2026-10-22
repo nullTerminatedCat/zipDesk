@@ -510,9 +510,18 @@ DropDecision decideDrop(const std::vector<std::wstring>& paths, bool archiveOpen
             others.push_back(path);
         }
     }
-    if (!archives.empty()) {
+    // One archive alone still opens; multiple archives or archive+files need an explicit choice.
+    if (archives.size() == 1 && others.empty()) {
         decision.action = DropAction::OpenArchive;
         decision.archivePath = archives.front();
+        decision.archives = std::move(archives);
+        return decision;
+    }
+    if (!archives.empty()) {
+        decision.action = DropAction::Prompt;
+        decision.archivePath = archives.front();
+        decision.archives = std::move(archives);
+        decision.files = std::move(others);
         return decision;
     }
     decision.files = std::move(others);
