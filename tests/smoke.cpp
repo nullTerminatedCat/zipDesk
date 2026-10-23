@@ -1,5 +1,6 @@
 #include "ArchiveService.hpp"
 #include "Launch.hpp"
+#include "ClassicContextMenu.hpp"
 
 #include <windows.h>
 
@@ -736,7 +737,30 @@ void testMove(zipdesk::ArchiveService& service, const fs::path& root, zipdesk::A
     check(after.entries.size() == 1 && containsPath(after, L"keep.txt", 4), "folder move preserves unrelated items");
 }
 
+
+void testClassicContextMenuRegistry() {
+    const bool win11 = zipdesk::isWindows11ForClassicMenu();
+    check(win11, "classic menu helper should detect Windows 11 on this CI machine");
+    if (!win11) {
+        return;
+    }
+    const bool original = zipdesk::isClassicContextMenuEnabled();
+    check(zipdesk::enableClassicContextMenu(), "enable classic context menu writes InprocServer32");
+    check(zipdesk::isClassicContextMenuEnabled(), "classic context menu reports enabled after write");
+    check(zipdesk::disableClassicContextMenu(), "disable classic context menu deletes CLSID key");
+    check(!zipdesk::isClassicContextMenuEnabled(), "classic context menu reports disabled after delete");
+    check(zipdesk::enableClassicContextMenu(), "re-enable classic context menu succeeds");
+    check(zipdesk::isClassicContextMenuEnabled(), "classic context menu enabled again");
+    if (original) {
+        check(zipdesk::enableClassicContextMenu(), "restore original enabled classic menu");
+    } else {
+        check(zipdesk::disableClassicContextMenu(), "restore original disabled classic menu");
+    }
+    check(zipdesk::isClassicContextMenuEnabled() == original, "classic menu state restored");
+}
+
 int main() {
+    testClassicContextMenuRegistry();
     testSmartExtractDestination();
     testLaunchParser();
     testDropDecision();

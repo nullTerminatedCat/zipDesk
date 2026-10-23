@@ -7,6 +7,7 @@
 #include "ProgressDialog.hpp"
 #include "Lang.hpp"
 #include "ShellIntegration.hpp"
+#include "ClassicContextMenu.hpp"
 
 #include <QAbstractButton>
 #include <QAbstractTableModel>
@@ -2094,6 +2095,7 @@ void MainWindow::returnHome() {
 void MainWindow::showSettings() {
     QDialog dialog(this);
     dialog.setWindowTitle("设置");
+    dialog.setObjectName("settingsDialog");
     auto* layout = new QVBoxLayout(&dialog);
     layout->setContentsMargins(24, 24, 24, 20);
     layout->setSpacing(12);
@@ -2114,8 +2116,26 @@ void MainWindow::showSettings() {
     layout->addWidget(new QLabel("资源管理器", &dialog));
     const std::wstring exe = QCoreApplication::applicationFilePath().toStdWString();
     auto* shell = new QCheckBox("集成到资源管理器（关联 zip、7z、rar，并加入右键菜单）", &dialog);
+    shell->setObjectName("shellIntegrationCheck");
     shell->setChecked(zipdesk::shellIntegrationInstalled(exe));
     layout->addWidget(shell);
+
+    const bool win11 = zipdesk::isWindows11ForClassicMenu();
+    const bool classicWasOn = zipdesk::isClassicContextMenuEnabled();
+    auto* classic = new QCheckBox("使用 Windows 10 经典右键菜单", &dialog);
+    classic->setObjectName("classicContextMenuCheck");
+    classic->setChecked(classicWasOn);
+    classic->setEnabled(win11);
+    layout->addWidget(classic);
+    auto* classicHint = new QLabel(
+        win11 ? "更改后需重启资源管理器才会生效；不需要管理员权限。"
+              : "仅 Windows 11 可用。当前系统不支持此选项。",
+        &dialog);
+    classicHint->setObjectName("classicContextMenuHint");
+    classicHint->setWordWrap(true);
+    classicHint->setStyleSheet("color: #667b75; font-size: 12px;");
+    layout->addWidget(classicHint);
+
     auto* buttons = new QHBoxLayout;
     buttons->addStretch();
     auto* ok = new QPushButton("确定", &dialog);
@@ -2126,7 +2146,7 @@ void MainWindow::showSettings() {
     layout->addLayout(buttons);
     connect(ok, &QPushButton::clicked, &dialog, &QDialog::accept);
     connect(cancel, &QPushButton::clicked, &dialog, &QDialog::reject);
-    dialog.resize(520, 280);
+    dialog.resize(520, 360);
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
@@ -2134,8 +2154,34 @@ void MainWindow::showSettings() {
     if (shell->isChecked() != integrated) {
         toggleShellIntegration();
     }
+    bool classicChanged = false;
+    if (win11 && classic->isChecked() != classicWasOn) {
+        classicChanged = classic->isChecked() ? zipdesk::enableClassicContextMenu()
+                                              : zipdesk::disableClassicContextMenu();
+        if (!classicChanged) {
+            QMessageBox::warning(this, "青匣", "无法更改经典右键菜单设置，请稍后重试。");
+        }
+    }
     zipdesk::setUiLanguage(english->isChecked() ? zipdesk::UiLanguage::English : zipdesk::UiLanguage::Chinese);
     applyLanguage();
+    if (classicChanged) {
+        QMessageBox box(this);
+        box.setIcon(QMessageBox::Information);
+        box.setWindowTitle("青匣");
+        box.setText("经典右键菜单设置已更新。");
+        box.setInformativeText(
+            "需要重启 Windows 资源管理器后才会生效。\n"
+            "重启时任务栏会短暂消失，已打开的文件夹窗口通常会自动恢复；"
+            "未保存的记事本等内容请先保存。");
+        auto* restart = box.addButton("立即重启资源管理器", QMessageBox::AcceptRole);
+        box.addButton("稍后自行重启", QMessageBox::RejectRole);
+        box.exec();
+        if (box.clickedButton() == restart) {
+            if (!zipdesk::restartWindowsExplorer()) {
+                QMessageBox::warning(this, "青匣", "未能重启资源管理器，请在任务管理器中结束 explorer.exe 后再运行它。");
+            }
+        }
+    }
 }
 
 void MainWindow::applyLanguage() {

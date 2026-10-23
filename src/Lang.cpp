@@ -93,6 +93,16 @@ const char* englishOf(const QString& chinese) {
         {"拖入压缩包可打开，拖入文件或文件夹可新建压缩", "Drop an archive to open it, or drop files to create one"},
         {"拖入文件可追加到压缩包", "Drop files to add them to the archive"},
         {"上一级", "Up one level"},
+        {"使用 Windows 10 经典右键菜单", "Use the Windows 10 classic context menu"},
+        {"更改后需重启资源管理器才会生效；不需要管理员权限。",
+         "Restart File Explorer for the change to take effect. Administrator rights are not required."},
+        {"仅 Windows 11 可用。当前系统不支持此选项。", "Available on Windows 11 only."},
+        {"立即重启资源管理器", "Restart Explorer now"},
+        {"稍后自行重启", "Restart later"},
+        {"经典右键菜单设置已更新。", "Classic context menu setting updated."},
+        {"无法更改经典右键菜单设置，请稍后重试。", "Could not change the classic context menu setting. Please try again."},
+        {"未能重启资源管理器，请在任务管理器中结束 explorer.exe 后再运行它。",
+         "Could not restart Explorer. End explorer.exe in Task Manager, then start it again."},
     };
     for (const Item& item : items) {
         if (chinese == QString::fromUtf8(item.zh)) {

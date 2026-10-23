@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(ZipDesk VERSION 0.2.9 LANGUAGES CXX)
+project(ZipDesk VERSION 0.2.10 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -75,6 +75,8 @@ qt_add_executable(ZipDesk WIN32
     src/MultiDropDialog.hpp
     src/ShellIntegration.cpp
     src/ShellIntegration.hpp
+    src/ClassicContextMenu.cpp
+    src/ClassicContextMenu.hpp
     src/Cli.cpp
     src/Cli.hpp
     src/Lang.cpp
@@ -127,8 +129,11 @@ if(WIN32)
     endif()
 endif()
 
-add_executable(zipdesk_smoke tests/smoke.cpp)
+add_executable(zipdesk_smoke tests/smoke.cpp src/ClassicContextMenu.cpp)
 target_link_libraries(zipdesk_smoke PRIVATE zipdesk_core)
+if(WIN32)
+    target_link_libraries(zipdesk_smoke PRIVATE advapi32 shell32)
+endif()
 if(MSVC)
     target_compile_options(zipdesk_smoke PRIVATE /utf-8 /W3 /EHsc)
 endif()
@@ -167,6 +172,8 @@ if(TARGET Qt6::Test)
         src/MultiDropDialog.hpp
         src/ShellIntegration.cpp
         src/ShellIntegration.hpp
+        src/ClassicContextMenu.cpp
+        src/ClassicContextMenu.hpp
         src/Lang.cpp
         src/Lang.hpp
     )

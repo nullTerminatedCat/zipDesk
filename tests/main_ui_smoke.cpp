@@ -810,9 +810,11 @@ int main(int argc, char* argv[]) {
     }
 
     bool settingsLanguageExclusive = false;
+    bool settingsClassicPresent = false;
+    bool settingsClassicEnabledMatchesOs = false;
     QToolButton* settings = nullptr;
     for (QToolButton* item : window.findChildren<QToolButton*>()) {
-        if (item->property("tip").toString() == "设置") {
+        if (item->property("tip").toString() == QString::fromUtf8("设置")) {
             settings = item;
             break;
         }
@@ -821,7 +823,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "FAIL: settings button is missing\n";
         return 1;
     }
-    QTimer::singleShot(50, &window, [&settingsLanguageExclusive]() {
+    QTimer::singleShot(50, &window, [&]() {
         auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
         if (!dialog) {
             return;
@@ -829,18 +831,35 @@ int main(int argc, char* argv[]) {
         QRadioButton* chinese = nullptr;
         QRadioButton* english = nullptr;
         for (QRadioButton* radio : dialog->findChildren<QRadioButton*>()) {
-            if (radio->text() == "简体中文") chinese = radio;
+            if (radio->text() == QString::fromUtf8("简体中文")) chinese = radio;
             if (radio->text() == "English") english = radio;
         }
         if (chinese && english) {
             english->setChecked(true);
             settingsLanguageExclusive = english->isChecked() && !chinese->isChecked();
         }
+        auto* classic = dialog->findChild<QCheckBox*>("classicContextMenuCheck");
+        auto* classicHint = dialog->findChild<QLabel*>("classicContextMenuHint");
+        settingsClassicPresent = classic != nullptr && classicHint != nullptr;
+        if (classic != nullptr) {
+            // On Windows 11 the control is interactive; elsewhere it stays disabled.
+            settingsClassicEnabledMatchesOs = classic->isEnabled();
+        }
+        QDir().mkpath(QStringLiteral("tmp-screens"));
+        dialog->grab().save(QStringLiteral("tmp-screens/settings-classic-context-menu.png"));
         dialog->reject();
     });
     QTest::mouseClick(settings, Qt::LeftButton);
     if (!settingsLanguageExclusive) {
         std::cerr << "FAIL: settings language choice is not exclusive\n";
+        return 1;
+    }
+    if (!settingsClassicPresent) {
+        std::cerr << "FAIL: classic context menu settings controls are missing\n";
+        return 1;
+    }
+    if (!settingsClassicEnabledMatchesOs) {
+        std::cerr << "FAIL: classic context menu toggle should be enabled on Windows 11\n";
         return 1;
     }
 
