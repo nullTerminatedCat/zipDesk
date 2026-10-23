@@ -825,7 +825,7 @@ void MainWindow::buildUi() {
     m_extractMenu = new QMenu(this);
     m_extractMenu->addAction("智能解压", this, [this]() {
         const QString path = m_path.empty()
-            ? QFileDialog::getOpenFileName(this, "选择要解压的压缩包", QString(), "压缩包 (*.zip *.7z *.rar)")
+            ? QFileDialog::getOpenFileName(this, "选择要解压的压缩包", QString(), "压缩包 (*.zip *.7z *.rar);;所有文件 (*.*)")
             : QString::fromStdWString(m_path);
         if (!path.isEmpty()) smartExtract(path);
     });
@@ -1456,6 +1456,21 @@ void MainWindow::setBusy(bool busy) {
 void MainWindow::showArchive(zipdesk::ArchiveInfo info) {
     const bool differentArchive = m_path != info.path;
     m_path = info.path;
+    {
+        const auto sniffed = zipdesk::sniffContentFormat(m_path);
+        const QString ext = QFileInfo(QString::fromStdWString(m_path)).suffix().toLower();
+        QString expected;
+        if (ext == QLatin1String("zip")) expected = QStringLiteral("zip");
+        else if (ext == QLatin1String("7z")) expected = QStringLiteral("7z");
+        else if (ext == QLatin1String("rar")) expected = QStringLiteral("rar");
+        const QString actual = QString::fromStdWString(zipdesk::contentFormatName(sniffed)).toLower();
+        if (!expected.isEmpty() && sniffed != zipdesk::ContentFormat::Unknown && actual != expected) {
+            statusBar()->showMessage(
+                QStringLiteral("已按文件内容识别为 %1（扩展名是 .%2）")
+                    .arg(QString::fromStdWString(zipdesk::contentFormatName(sniffed)), ext),
+                8000);
+        }
+    }
     if (!info.password.empty()) {
         m_password = info.password;
     }
@@ -1913,7 +1928,7 @@ QStringList MainWindow::selectedTopLevelPaths() const {
 }
 
 void MainWindow::chooseAndOpen() {
-    const QString path = QFileDialog::getOpenFileName(this, "打开压缩包", QString(), "压缩包 (*.zip *.7z *.rar)");
+    const QString path = QFileDialog::getOpenFileName(this, "打开压缩包", QString(), "压缩包 (*.zip *.7z *.rar);;所有文件 (*.*)");
     if (!path.isEmpty()) {
         openArchive(path);
     }
@@ -1924,8 +1939,10 @@ void MainWindow::openArchive(const QString& path) {
         QMessageBox::warning(this, "青匣", "找不到压缩包。");
         return;
     }
-    if (!zipdesk::isArchivePath(path.toStdWString())) {
-        QMessageBox::warning(this, "青匣", "只支持 zip、7z 和 rar。");
+    try {
+        (void)zipdesk::formatFromPath(path.toStdWString());
+    } catch (const zipdesk::ArchiveError& error) {
+        QMessageBox::warning(this, "青匣", QString::fromStdWString(error.message()));
         return;
     }
     const bool sameArchive = m_path == path.toStdWString();
@@ -2190,7 +2207,7 @@ void MainWindow::extractArchive(bool selectedOnly, bool namedFolder) {
         if (selectedOnly) {
             return;
         }
-        const QString chosen = QFileDialog::getOpenFileName(this, "选择要解压的压缩包", QString(), "压缩包 (*.zip *.7z *.rar)");
+        const QString chosen = QFileDialog::getOpenFileName(this, "选择要解压的压缩包", QString(), "压缩包 (*.zip *.7z *.rar);;所有文件 (*.*)");
         if (chosen.isEmpty()) {
             return;
         }

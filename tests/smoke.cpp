@@ -86,6 +86,61 @@ void testLaunchParser() {
     check(missing.action == zipdesk::LaunchAction::None, "missing path is ignored");
 }
 
+
+void testContentSniff(const fs::path& root) {
+    const auto writeBytes = [](const fs::path& path, const std::vector<unsigned char>& bytes) {
+        fs::create_directories(path.parent_path());
+        std::ofstream out(path, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    };
+
+    const fs::path zipMisnamed = root / L"payload.dat";
+    writeBytes(zipMisnamed, {'P', 'K', 0x03, 0x04, 0, 0, 0, 0});
+    check(zipdesk::isArchivePath(zipMisnamed.wstring()), "zip magic without zip extension is archive");
+    check(zipdesk::sniffContentFormat(zipMisnamed.wstring()) == zipdesk::ContentFormat::Zip, "sniff zip magic");
+    check(zipdesk::formatFromPath(zipMisnamed.wstring()) == zipdesk::ArchiveFormat::Zip, "open misnamed zip by content");
+
+    const fs::path sevenAsZip = root / L"actually.7z.zip";
+    writeBytes(sevenAsZip, {'7', 'z', 0xBC, 0xAF, 0x27, 0x1C, 0, 0});
+    check(zipdesk::sniffContentFormat(sevenAsZip.wstring()) == zipdesk::ContentFormat::SevenZip, "sniff 7z under zip name");
+    check(zipdesk::formatFromPath(sevenAsZip.wstring()) == zipdesk::ArchiveFormat::SevenZip,
+          "prefer 7z content over zip extension");
+
+    const fs::path gzipAsZip = root / L"tarlike.zip";
+    writeBytes(gzipAsZip, {0x1F, 0x8B, 0x08, 0, 0, 0, 0, 0});
+    bool rejectedGzip = false;
+    std::wstring gzipMessage;
+    try {
+        (void)zipdesk::formatFromPath(gzipAsZip.wstring());
+    } catch (const zipdesk::ArchiveError& error) {
+        rejectedGzip = true;
+        gzipMessage = error.message();
+    }
+    check(rejectedGzip, "gzip content under zip extension is rejected");
+    check(gzipMessage.find(L"GZIP") != std::wstring::npos && gzipMessage.find(L"ZIP") != std::wstring::npos,
+          "gzip mismatch mentions GZIP and ZIP extension");
+
+    const fs::path tarFile = root / L"sample.tar";
+    std::vector<unsigned char> tar(300, 0);
+    const char ustar[] = "ustar";
+    for (int i = 0; i < 5; ++i) tar[257 + i] = static_cast<unsigned char>(ustar[i]);
+    writeBytes(tarFile, tar);
+    check(zipdesk::isArchivePath(tarFile.wstring()), "tar path counts as archive for clearer errors");
+    bool rejectedTar = false;
+    std::wstring tarMessage;
+    try {
+        (void)zipdesk::formatFromPath(tarFile.wstring());
+    } catch (const zipdesk::ArchiveError& error) {
+        rejectedTar = true;
+        tarMessage = error.message();
+    }
+    check(rejectedTar && tarMessage.find(L"TAR") != std::wstring::npos, "tar is recognized but unsupported");
+
+    check(zipdesk::isArchivePath(L"C:\\missing.zip"), "missing zip path still detected by extension");
+    check(zipdesk::formatFromPath(L"C:\\missing.zip") == zipdesk::ArchiveFormat::Zip,
+          "missing zip path keeps extension format");
+}
+
 void testDropDecision() {
     const zipdesk::DropDecision open = zipdesk::decideDrop({L"C:\\a.zip"}, false);
     check(open.action == zipdesk::DropAction::OpenArchive && open.archivePath == L"C:\\a.zip"
@@ -690,6 +745,8 @@ int main() {
     std::error_code error;
     fs::remove_all(root, error);
     fs::create_directories(root);
+
+    testContentSniff(root / L"sniff");
 
     try {
         zipdesk::ArchiveService service(exeDirectory() + L"\\7z.dll");

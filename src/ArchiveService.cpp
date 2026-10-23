@@ -419,23 +419,100 @@ bool pathInside(const std::wstring& parent, const std::wstring& child) {
     return child.size() > prefix.size() && child.compare(0, prefix.size(), prefix) == 0;
 }
 
-bool isArchivePath(const std::wstring& path) {
-    std::error_code error;
-    if (path.empty() || fs::is_directory(path, error)) {
-        return false;
+
+ContentFormat sniffContentFormat(const std::wstring& path) {
+    std::ifstream input(fs::path(path), std::ios::binary);
+    if (!input) {
+        return ContentFormat::Unknown;
     }
-    std::wstring extension = fs::path(path).extension().wstring();
-    for (wchar_t& ch : extension) {
-        ch = static_cast<wchar_t>(towlower(ch));
+    std::vector<unsigned char> header(0x9008);
+    input.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(header.size()));
+    header.resize(static_cast<std::size_t>(std::max<std::streamsize>(0, input.gcount())));
+    const auto got = header.size();
+    auto at = [&](std::size_t offset, const char* text, std::size_t n) {
+        if (got < offset + n) return false;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (header[offset + i] != static_cast<unsigned char>(text[i])) return false;
+        }
+        return true;
+    };
+    if (got >= 4 && header[0] == 'P' && header[1] == 'K' &&
+        ((header[2] == 3 && header[3] == 4) || (header[2] == 5 && header[3] == 6) ||
+         (header[2] == 7 && header[3] == 8))) {
+        return ContentFormat::Zip;
     }
-    return extension == L".zip" || extension == L".7z" || extension == L".rar";
+    if (got >= 6 && header[0] == '7' && header[1] == 'z' && header[2] == 0xBC && header[3] == 0xAF &&
+        header[4] == 0x27 && header[5] == 0x1C) {
+        return ContentFormat::SevenZip;
+    }
+    if (got >= 7 && header[0] == 'R' && header[1] == 'a' && header[2] == 'r' && header[3] == '!' &&
+        header[4] == 0x1A && header[5] == 0x07) {
+        return ContentFormat::Rar;
+    }
+    if (got >= 2 && header[0] == 0x1F && header[1] == 0x8B) {
+        return ContentFormat::GZip;
+    }
+    if (got >= 6 && header[0] == 0xFD && header[1] == '7' && header[2] == 'z' && header[3] == 'X' &&
+        header[4] == 'Z' && header[5] == 0x00) {
+        return ContentFormat::Xz;
+    }
+    if (at(257, "ustar", 5)) {
+        return ContentFormat::Tar;
+    }
+    if (at(0x8001, "CD001", 5) || at(0x8801, "CD001", 5) || at(0x9001, "CD001", 5)) {
+        return ContentFormat::Iso;
+    }
+    return ContentFormat::Unknown;
 }
 
-ArchiveFormat formatFromPath(const std::wstring& path) {
+std::wstring contentFormatName(ContentFormat format) {
+    switch (format) {
+    case ContentFormat::Zip:
+        return L"ZIP";
+    case ContentFormat::SevenZip:
+        return L"7z";
+    case ContentFormat::Rar:
+        return L"RAR";
+    case ContentFormat::Tar:
+        return L"TAR";
+    case ContentFormat::GZip:
+        return L"GZIP";
+    case ContentFormat::Xz:
+        return L"XZ";
+    case ContentFormat::Iso:
+        return L"ISO";
+    case ContentFormat::Unknown:
+    default:
+        return L"未知";
+    }
+}
+
+namespace {
+
+std::wstring lowerExtension(const std::wstring& path) {
     std::wstring extension = fs::path(path).extension().wstring();
     for (wchar_t& ch : extension) {
         ch = static_cast<wchar_t>(towlower(ch));
     }
+    // .tar.gz / .tar.xz style: path.extension() is only the last suffix.
+    const std::wstring name = fs::path(path).filename().wstring();
+    std::wstring lowered = name;
+    for (wchar_t& ch : lowered) {
+        ch = static_cast<wchar_t>(towlower(ch));
+    }
+    if (lowered.size() > 7) {
+        const auto tail7 = lowered.substr(lowered.size() - 7);
+        if (tail7 == L".tar.gz") return L".tar.gz";
+        if (tail7 == L".tar.xz") return L".tar.xz";
+    }
+    if (lowered.size() > 8 && lowered.substr(lowered.size() - 8) == L".tar.bz2") {
+        return L".tar.bz2";
+    }
+    return extension;
+}
+
+std::optional<ArchiveFormat> formatFromExtension(const std::wstring& path) {
+    const std::wstring extension = lowerExtension(path);
     if (extension == L".zip") {
         return ArchiveFormat::Zip;
     }
@@ -445,7 +522,113 @@ ArchiveFormat formatFromPath(const std::wstring& path) {
     if (extension == L".rar") {
         return ArchiveFormat::Rar;
     }
-    throw ArchiveError(ErrorKind::Other, L"只支持 zip、7z 和 rar。");
+    return std::nullopt;
+}
+
+std::optional<ArchiveFormat> readableFromContent(ContentFormat sniffed) {
+    switch (sniffed) {
+    case ContentFormat::Zip:
+        return ArchiveFormat::Zip;
+    case ContentFormat::SevenZip:
+        return ArchiveFormat::SevenZip;
+    case ContentFormat::Rar:
+        return ArchiveFormat::Rar;
+    default:
+        return std::nullopt;
+    }
+}
+
+bool isRecognizedUnsupported(ContentFormat sniffed) {
+    return sniffed == ContentFormat::Tar || sniffed == ContentFormat::GZip || sniffed == ContentFormat::Xz ||
+           sniffed == ContentFormat::Iso;
+}
+
+ContentFormat unsupportedFromExtension(const std::wstring& path) {
+    const std::wstring extension = lowerExtension(path);
+    if (extension == L".tar") return ContentFormat::Tar;
+    if (extension == L".gz" || extension == L".tgz" || extension == L".tar.gz") return ContentFormat::GZip;
+    if (extension == L".xz" || extension == L".txz" || extension == L".tar.xz") return ContentFormat::Xz;
+    if (extension == L".iso") return ContentFormat::Iso;
+    if (extension == L".zipx") return ContentFormat::Zip;  // treated specially by caller
+    return ContentFormat::Unknown;
+}
+
+std::wstring archiveFormatName(ArchiveFormat format) {
+    switch (format) {
+    case ArchiveFormat::Zip:
+        return L"ZIP";
+    case ArchiveFormat::SevenZip:
+        return L"7z";
+    case ArchiveFormat::Rar:
+        return L"RAR";
+    }
+    return L"未知";
+}
+
+[[noreturn]] void throwUnsupported(ContentFormat sniffed, const std::optional<ArchiveFormat>& byExt) {
+    std::wstring message = L"识别到文件内容为 " + contentFormatName(sniffed) + L"，当前版本尚不支持打开该格式。";
+    if (byExt) {
+        message += L"扩展名像 " + archiveFormatName(*byExt) + L"，但内容与扩展名不符。";
+    }
+    message += L"目前可读取 ZIP、7z、RAR；可创建 ZIP、7z。";
+    throw ArchiveError(ErrorKind::Other, message);
+}
+
+}  // namespace
+
+bool isArchivePath(const std::wstring& path) {
+    std::error_code error;
+    if (path.empty() || fs::is_directory(path, error)) {
+        return false;
+    }
+    if (formatFromExtension(path)) {
+        return true;
+    }
+    if (unsupportedFromExtension(path) != ContentFormat::Unknown) {
+        return true;
+    }
+    const std::wstring extension = lowerExtension(path);
+    if (extension == L".zipx") {
+        return true;
+    }
+    std::error_code existsError;
+    if (!fs::is_regular_file(path, existsError)) {
+        return false;
+    }
+    const ContentFormat sniffed = sniffContentFormat(path);
+    return readableFromContent(sniffed).has_value() || isRecognizedUnsupported(sniffed);
+}
+
+ArchiveFormat formatFromPath(const std::wstring& path) {
+    const auto byExt = formatFromExtension(path);
+    const std::wstring extension = lowerExtension(path);
+    ContentFormat sniffed = ContentFormat::Unknown;
+    std::error_code existsError;
+    if (fs::is_regular_file(path, existsError)) {
+        sniffed = sniffContentFormat(path);
+    }
+
+    if (isRecognizedUnsupported(sniffed)) {
+        throwUnsupported(sniffed, byExt);
+    }
+    if (extension == L".zipx") {
+        throw ArchiveError(ErrorKind::Other,
+                           L"识别到扩展名为 ZIPX，当前版本尚不支持打开 ZIPX。目前可读取 ZIP、7z、RAR；可创建 ZIP、7z。");
+    }
+    if (const ContentFormat pretended = unsupportedFromExtension(path); pretended != ContentFormat::Unknown &&
+        !readableFromContent(sniffed)) {
+        // Extension claims TAR/GZ/XZ/ISO and content did not override as a readable format.
+        throwUnsupported(pretended, byExt);
+    }
+
+    if (const auto byContent = readableFromContent(sniffed)) {
+        return *byContent;
+    }
+    if (byExt) {
+        // Keep extension for SFX / unusual headers that did not match a simple magic.
+        return *byExt;
+    }
+    throw ArchiveError(ErrorKind::Other, L"无法识别为可打开的压缩包。目前可读取 ZIP、7z、RAR；可创建 ZIP、7z。");
 }
 
 std::vector<std::uint32_t> expandSelection(const std::vector<ArchiveEntry>& entries,

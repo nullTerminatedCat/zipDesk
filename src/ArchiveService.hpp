@@ -14,6 +14,10 @@ namespace zipdesk {
 
 enum class ArchiveFormat : int { Zip, SevenZip, Rar };
 
+// Result of reading the file header (and a few common extensions). Readable formats
+// today are Zip/SevenZip/Rar; Tar/GZip/Xz/Iso are recognized so we can explain the limit.
+enum class ContentFormat : int { Unknown, Zip, SevenZip, Rar, Tar, GZip, Xz, Iso };
+
 enum class CompressionLevel : int { Store, Fast, Normal, Maximum };
 
 // KeepBoth leaves existing files untouched and writes conflicting archive files
@@ -172,6 +176,8 @@ private:
 std::wstring normalizeArchivePath(std::wstring path);
 bool pathInside(const std::wstring& parent, const std::wstring& child);
 bool isArchivePath(const std::wstring& path);
+ContentFormat sniffContentFormat(const std::wstring& path);
+std::wstring contentFormatName(ContentFormat format);
 ArchiveFormat formatFromPath(const std::wstring& path);
 
 std::vector<std::uint32_t> expandSelection(const std::vector<ArchiveEntry>& entries,
