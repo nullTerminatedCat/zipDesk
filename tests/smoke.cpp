@@ -2,6 +2,9 @@
 #include "Launch.hpp"
 #include "ClassicContextMenu.hpp"
 
+#include <bit7z/bit7z.hpp>
+#include <bit7z/bitformat.hpp>
+
 #include <windows.h>
 
 #include <algorithm>
@@ -109,37 +112,44 @@ void testContentSniff(const fs::path& root) {
 
     const fs::path gzipAsZip = root / L"tarlike.zip";
     writeBytes(gzipAsZip, {0x1F, 0x8B, 0x08, 0, 0, 0, 0, 0});
-    bool rejectedGzip = false;
-    std::wstring gzipMessage;
-    try {
-        (void)zipdesk::formatFromPath(gzipAsZip.wstring());
-    } catch (const zipdesk::ArchiveError& error) {
-        rejectedGzip = true;
-        gzipMessage = error.message();
-    }
-    check(rejectedGzip, "gzip content under zip extension is rejected");
-    check(gzipMessage.find(L"GZIP") != std::wstring::npos && gzipMessage.find(L"ZIP") != std::wstring::npos,
-          "gzip mismatch mentions GZIP and ZIP extension");
+    check(zipdesk::sniffContentFormat(gzipAsZip.wstring()) == zipdesk::ContentFormat::GZip, "sniff gzip under zip name");
+    check(zipdesk::formatFromPath(gzipAsZip.wstring()) == zipdesk::ArchiveFormat::GZip,
+          "prefer gzip content over zip extension");
 
     const fs::path tarFile = root / L"sample.tar";
     std::vector<unsigned char> tar(300, 0);
     const char ustar[] = "ustar";
     for (int i = 0; i < 5; ++i) tar[257 + i] = static_cast<unsigned char>(ustar[i]);
     writeBytes(tarFile, tar);
-    check(zipdesk::isArchivePath(tarFile.wstring()), "tar path counts as archive for clearer errors");
-    bool rejectedTar = false;
-    std::wstring tarMessage;
-    try {
-        (void)zipdesk::formatFromPath(tarFile.wstring());
-    } catch (const zipdesk::ArchiveError& error) {
-        rejectedTar = true;
-        tarMessage = error.message();
-    }
-    check(rejectedTar && tarMessage.find(L"TAR") != std::wstring::npos, "tar is recognized but unsupported");
+    check(zipdesk::isArchivePath(tarFile.wstring()), "tar path counts as archive");
+    check(zipdesk::formatFromPath(tarFile.wstring()) == zipdesk::ArchiveFormat::Tar, "tar content is readable");
+    check(zipdesk::isReadOnlyFormat(zipdesk::ArchiveFormat::Tar), "tar is read-only");
+    check(zipdesk::isReadOnlyFormat(zipdesk::ArchiveFormat::GZip), "gzip is read-only");
+    check(zipdesk::isReadOnlyFormat(zipdesk::ArchiveFormat::TarGz), "tar.gz is read-only");
 
     check(zipdesk::isArchivePath(L"C:\\missing.zip"), "missing zip path still detected by extension");
     check(zipdesk::formatFromPath(L"C:\\missing.zip") == zipdesk::ArchiveFormat::Zip,
           "missing zip path keeps extension format");
+    check(zipdesk::formatFromPath(L"C:\\missing.tar.gz") == zipdesk::ArchiveFormat::TarGz,
+          "missing tar.gz path keeps compound extension");
+    check(zipdesk::formatFromPath(L"C:\\missing.tgz") == zipdesk::ArchiveFormat::TarGz,
+          "missing tgz path keeps extension");
+    check(zipdesk::formatFromPath(L"C:\\missing.tar") == zipdesk::ArchiveFormat::Tar,
+          "missing tar path keeps extension");
+    check(zipdesk::formatFromPath(L"C:\\missing.gz") == zipdesk::ArchiveFormat::GZip,
+          "missing gz path keeps extension");
+
+    const fs::path xzFile = root / L"sample.xz";
+    writeBytes(xzFile, {0xFD, '7', 'z', 'X', 'Z', 0x00});
+    bool rejectedXz = false;
+    std::wstring xzMessage;
+    try {
+        (void)zipdesk::formatFromPath(xzFile.wstring());
+    } catch (const zipdesk::ArchiveError& error) {
+        rejectedXz = true;
+        xzMessage = error.message();
+    }
+    check(rejectedXz && xzMessage.find(L"XZ") != std::wstring::npos, "xz remains unsupported");
 }
 
 void testDropDecision() {
@@ -815,6 +825,81 @@ void testClassicContextMenuRegistry() {
     check(zipdesk::isClassicContextMenuEnabled() == original, "classic menu state restored");
 }
 
+
+void testTarGzipRead(zipdesk::ArchiveService& service, const fs::path& root) {
+    fs::create_directories(root / L"src");
+    writeFile(root / L"src" / L"hello.txt", "hello-tar-gz");
+    bit7z::Bit7zLibrary library(exeDirectory() + L"\\7z.dll");
+
+    const fs::path tarPath = root / L"sample.tar";
+    {
+        bit7z::BitFileCompressor compressor{library, bit7z::BitFormat::Tar};
+        compressor.compress({(root / L"src" / L"hello.txt").wstring()}, tarPath.wstring());
+    }
+    check(zipdesk::formatFromPath(tarPath.wstring()) == zipdesk::ArchiveFormat::Tar, "sample.tar format");
+    const zipdesk::OperationHooks noHooks;
+    const zipdesk::ArchiveInfo tarInfo = service.read(tarPath.wstring(), L"", noHooks);
+    check(tarInfo.format == zipdesk::ArchiveFormat::Tar && containsPath(tarInfo, L"hello.txt", 12),
+          "tar lists hello.txt");
+    const fs::path tarOut = root / L"out-tar";
+    zipdesk::ExtractRequest tarExtract;
+    tarExtract.archivePath = tarPath.wstring();
+    tarExtract.outputDir = tarOut.wstring();
+    tarExtract.overwrite = zipdesk::OverwritePolicy::Overwrite;
+    service.extract(tarExtract, noHooks);
+    check(readFile(findChild(tarOut, L"hello.txt")) == "hello-tar-gz", "tar extracts hello.txt");
+    service.test(tarPath.wstring(), L"", noHooks);
+
+    const fs::path gzPath = root / L"hello.txt.gz";
+    {
+        bit7z::BitFileCompressor compressor{library, bit7z::BitFormat::GZip};
+        compressor.compress({(root / L"src" / L"hello.txt").wstring()}, gzPath.wstring());
+    }
+    check(zipdesk::formatFromPath(gzPath.wstring()) == zipdesk::ArchiveFormat::GZip, "sample.gz format");
+    const zipdesk::ArchiveInfo gzInfo = service.read(gzPath.wstring(), L"", noHooks);
+    check(gzInfo.format == zipdesk::ArchiveFormat::GZip && !gzInfo.entries.empty(), "gzip lists one member");
+    const fs::path gzOut = root / L"out-gz";
+    zipdesk::ExtractRequest gzExtract;
+    gzExtract.archivePath = gzPath.wstring();
+    gzExtract.outputDir = gzOut.wstring();
+    gzExtract.overwrite = zipdesk::OverwritePolicy::Overwrite;
+    service.extract(gzExtract, noHooks);
+    check(readFile(findChild(gzOut, L"hello.txt")) == "hello-tar-gz", "gzip extracts original file");
+
+    const fs::path tarGzPath = root / L"sample.tar.gz";
+    {
+        bit7z::BitFileCompressor compressor{library, bit7z::BitFormat::GZip};
+        compressor.compress({tarPath.wstring()}, tarGzPath.wstring());
+    }
+    check(zipdesk::formatFromPath(tarGzPath.wstring()) == zipdesk::ArchiveFormat::TarGz, "sample.tar.gz format");
+    const zipdesk::ArchiveInfo nested = service.read(tarGzPath.wstring(), L"", noHooks);
+    check(nested.format == zipdesk::ArchiveFormat::TarGz && containsPath(nested, L"hello.txt", 12),
+          "tar.gz lists inner tar members");
+    const fs::path nestedOut = root / L"out-targz";
+    zipdesk::ExtractRequest nestedExtract;
+    nestedExtract.archivePath = tarGzPath.wstring();
+    nestedExtract.outputDir = nestedOut.wstring();
+    nestedExtract.overwrite = zipdesk::OverwritePolicy::Overwrite;
+    service.extract(nestedExtract, noHooks);
+    check(readFile(findChild(nestedOut, L"hello.txt")) == "hello-tar-gz", "tar.gz extracts inner files");
+
+    const fs::path tgzPath = root / L"sample.tgz";
+    fs::copy_file(tarGzPath, tgzPath);
+    check(zipdesk::formatFromPath(tgzPath.wstring()) == zipdesk::ArchiveFormat::TarGz, "tgz extension is TarGz");
+    const zipdesk::ArchiveInfo tgzInfo = service.read(tgzPath.wstring(), L"", noHooks);
+    check(containsPath(tgzInfo, L"hello.txt", 12), "tgz lists inner tar members");
+
+    bool rejectedEdit = false;
+    try {
+        service.append({tarPath.wstring(), {(root / L"src" / L"hello.txt").wstring()}, L"",
+                        zipdesk::CompressionLevel::Normal},
+                       noHooks);
+    } catch (const zipdesk::ArchiveError&) {
+        rejectedEdit = true;
+    }
+    check(rejectedEdit, "tar remains non-editable");
+}
+
 int main() {
     testClassicContextMenuRegistry();
     testSmartExtractDestination();
@@ -831,6 +916,7 @@ int main() {
     try {
         zipdesk::ArchiveService service(exeDirectory() + L"\\7z.dll");
         testReadItemSizeLimit(service, root / L"read-limit");
+        testTarGzipRead(service, root / L"tar-gz");
         testRoundTrip(service, zipdesk::ArchiveFormat::Zip, root / "zip");
         testRoundTrip(service, zipdesk::ArchiveFormat::SevenZip, root / "7z");
         testOverwriteAndCancel(service, root / "zip");

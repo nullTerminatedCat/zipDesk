@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <system_error>
 #include <utility>
 
@@ -106,12 +107,22 @@ const bit7z::BitInOutFormat& toFormat(ArchiveFormat format) {
     if (format == ArchiveFormat::SevenZip) {
         return bit7z::BitFormat::SevenZip;
     }
-    throw ArchiveError(ErrorKind::Other, L"不能创建 RAR，只能打开和解压。");
+    throw ArchiveError(ErrorKind::Other, L"不能创建该格式，只能打开和解压。目前可创建 ZIP、7z。");
 }
 
 const bit7z::BitInFormat& toInFormat(ArchiveFormat format) {
     if (format == ArchiveFormat::Rar) {
         return bit7z::BitFormat::Auto;
+    }
+    if (format == ArchiveFormat::Tar) {
+        return bit7z::BitFormat::Tar;
+    }
+    if (format == ArchiveFormat::GZip) {
+        return bit7z::BitFormat::GZip;
+    }
+    if (format == ArchiveFormat::TarGz) {
+        // Compound gzip+tar is materialized to a temp .tar before bit7z sees it.
+        throw ArchiveError(ErrorKind::Other, L"内部错误：TAR.GZ 需要先展开内层 TAR。");
     }
     return toFormat(format);
 }
@@ -299,6 +310,80 @@ void removePath(const fs::path& path) {
     fs::remove_all(path, error);
 }
 
+std::wstring makeTempTarPath() {
+    wchar_t directory[MAX_PATH] = {};
+    const DWORD length = GetTempPathW(MAX_PATH, directory);
+    if (length == 0 || length >= MAX_PATH) {
+        throw ArchiveError(ErrorKind::Other, L"无法创建临时目录。");
+    }
+    wchar_t tempFile[MAX_PATH] = {};
+    if (GetTempFileNameW(directory, L"zdt", 0, tempFile) == 0) {
+        throw ArchiveError(ErrorKind::Other, L"无法创建临时文件。");
+    }
+    const fs::path created(tempFile);
+    const fs::path tarPath = fs::path(created).replace_extension(L".tar");
+    std::error_code error;
+    fs::rename(created, tarPath, error);
+    if (error) {
+        fs::remove(created, error);
+        throw ArchiveError(ErrorKind::Other, L"无法准备临时 TAR 文件。");
+    }
+    return tarPath.wstring();
+}
+
+class ScopedTempPath {
+public:
+    explicit ScopedTempPath(fs::path path) : m_path(std::move(path)) {}
+    ScopedTempPath(const ScopedTempPath&) = delete;
+    ScopedTempPath& operator=(const ScopedTempPath&) = delete;
+    ScopedTempPath(ScopedTempPath&& other) noexcept : m_path(std::move(other.m_path)) { other.m_path.clear(); }
+    ScopedTempPath& operator=(ScopedTempPath&& other) noexcept {
+        if (this != &other) {
+            removePath(m_path);
+            m_path = std::move(other.m_path);
+            other.m_path.clear();
+        }
+        return *this;
+    }
+    ~ScopedTempPath() { removePath(m_path); }
+    const fs::path& path() const { return m_path; }
+    std::wstring wstring() const { return m_path.wstring(); }
+
+private:
+    fs::path m_path;
+};
+
+// Extracts the single gzip member to a temp .tar so TarGz can be listed/extracted
+// as a normal TAR.
+ScopedTempPath materializeTarFromGzip(const bit7z::Bit7zLibrary& library,
+                                      const std::wstring& gzipPath,
+                                      const OperationHooks& hooks) {
+    const fs::path tempTar = makeTempTarPath();
+    try {
+        bit7z::BitFileExtractor extractor{library, bit7z::BitFormat::GZip};
+        bindHooks(extractor, hooks);
+        std::ofstream output(tempTar, std::ios::binary | std::ios::trunc);
+        if (!output) {
+            removePath(tempTar);
+            throw ArchiveError(ErrorKind::Other, L"无法创建临时 TAR 文件。");
+        }
+        extractor.extract(gzipPath, output, 0);
+        output.close();
+        if (!output) {
+            removePath(tempTar);
+            throw ArchiveError(ErrorKind::Other, L"写入临时 TAR 失败。");
+        }
+        return ScopedTempPath(tempTar);
+    } catch (const bit7z::BitException& error) {
+        removePath(tempTar);
+        rethrowBit(error, hooks.cancel != nullptr && hooks.cancel->load());
+    } catch (...) {
+        removePath(tempTar);
+        throw;
+    }
+}
+
+
 void cleanupExtract(const ExtractRequest& request) {
     if (request.outputDir.empty() || !request.removeOutputOnCancel) {
         return;
@@ -420,6 +505,15 @@ bool pathInside(const std::wstring& parent, const std::wstring& child) {
 }
 
 
+std::wstring readableFormatsHint() {
+    return L"目前可读取 ZIP、7z、RAR、TAR、GZIP、TAR.GZ；可创建 ZIP、7z。";
+}
+
+bool isReadOnlyFormat(ArchiveFormat format) {
+    return format == ArchiveFormat::Rar || format == ArchiveFormat::Tar || format == ArchiveFormat::GZip ||
+           format == ArchiveFormat::TarGz;
+}
+
 ContentFormat sniffContentFormat(const std::wstring& path) {
     std::ifstream input(fs::path(path), std::ios::binary);
     if (!input) {
@@ -522,6 +616,15 @@ std::optional<ArchiveFormat> formatFromExtension(const std::wstring& path) {
     if (extension == L".rar") {
         return ArchiveFormat::Rar;
     }
+    if (extension == L".tar") {
+        return ArchiveFormat::Tar;
+    }
+    if (extension == L".tgz" || extension == L".tar.gz") {
+        return ArchiveFormat::TarGz;
+    }
+    if (extension == L".gz") {
+        return ArchiveFormat::GZip;
+    }
     return std::nullopt;
 }
 
@@ -533,20 +636,21 @@ std::optional<ArchiveFormat> readableFromContent(ContentFormat sniffed) {
         return ArchiveFormat::SevenZip;
     case ContentFormat::Rar:
         return ArchiveFormat::Rar;
+    case ContentFormat::Tar:
+        return ArchiveFormat::Tar;
+    case ContentFormat::GZip:
+        return ArchiveFormat::GZip;
     default:
         return std::nullopt;
     }
 }
 
 bool isRecognizedUnsupported(ContentFormat sniffed) {
-    return sniffed == ContentFormat::Tar || sniffed == ContentFormat::GZip || sniffed == ContentFormat::Xz ||
-           sniffed == ContentFormat::Iso;
+    return sniffed == ContentFormat::Xz || sniffed == ContentFormat::Iso;
 }
 
 ContentFormat unsupportedFromExtension(const std::wstring& path) {
     const std::wstring extension = lowerExtension(path);
-    if (extension == L".tar") return ContentFormat::Tar;
-    if (extension == L".gz" || extension == L".tgz" || extension == L".tar.gz") return ContentFormat::GZip;
     if (extension == L".xz" || extension == L".txz" || extension == L".tar.xz") return ContentFormat::Xz;
     if (extension == L".iso") return ContentFormat::Iso;
     if (extension == L".zipx") return ContentFormat::Zip;  // treated specially by caller
@@ -561,6 +665,12 @@ std::wstring archiveFormatName(ArchiveFormat format) {
         return L"7z";
     case ArchiveFormat::Rar:
         return L"RAR";
+    case ArchiveFormat::Tar:
+        return L"TAR";
+    case ArchiveFormat::GZip:
+        return L"GZIP";
+    case ArchiveFormat::TarGz:
+        return L"TAR.GZ";
     }
     return L"未知";
 }
@@ -570,7 +680,7 @@ std::wstring archiveFormatName(ArchiveFormat format) {
     if (byExt) {
         message += L"扩展名像 " + archiveFormatName(*byExt) + L"，但内容与扩展名不符。";
     }
-    message += L"目前可读取 ZIP、7z、RAR；可创建 ZIP、7z。";
+    message += readableFormatsHint();
     throw ArchiveError(ErrorKind::Other, message);
 }
 
@@ -613,22 +723,31 @@ ArchiveFormat formatFromPath(const std::wstring& path) {
     }
     if (extension == L".zipx") {
         throw ArchiveError(ErrorKind::Other,
-                           L"识别到扩展名为 ZIPX，当前版本尚不支持打开 ZIPX。目前可读取 ZIP、7z、RAR；可创建 ZIP、7z。");
+                           L"识别到扩展名为 ZIPX，当前版本尚不支持打开 ZIPX。" + readableFormatsHint());
     }
     if (const ContentFormat pretended = unsupportedFromExtension(path); pretended != ContentFormat::Unknown &&
         !readableFromContent(sniffed)) {
-        // Extension claims TAR/GZ/XZ/ISO and content did not override as a readable format.
+        // Extension claims XZ/ISO (or ZIPX handled above) and content did not override.
         throwUnsupported(pretended, byExt);
     }
 
+    // Prefer compound TAR.GZ when the extension says so and content is gzip (or unknown).
+    if (byExt && *byExt == ArchiveFormat::TarGz &&
+        (sniffed == ContentFormat::GZip || sniffed == ContentFormat::Unknown)) {
+        return ArchiveFormat::TarGz;
+    }
     if (const auto byContent = readableFromContent(sniffed)) {
+        // Plain .gz that is gzip stays GZip; .tar.gz already returned above.
+        if (*byContent == ArchiveFormat::GZip && byExt && *byExt == ArchiveFormat::TarGz) {
+            return ArchiveFormat::TarGz;
+        }
         return *byContent;
     }
     if (byExt) {
         // Keep extension for SFX / unusual headers that did not match a simple magic.
         return *byExt;
     }
-    throw ArchiveError(ErrorKind::Other, L"无法识别为可打开的压缩包。目前可读取 ZIP、7z、RAR；可创建 ZIP、7z。");
+    throw ArchiveError(ErrorKind::Other, L"无法识别为可打开的压缩包。" + readableFormatsHint());
 }
 
 std::vector<std::uint32_t> expandSelection(const std::vector<ArchiveEntry>& entries,
@@ -735,7 +854,15 @@ ArchiveInfo ArchiveService::read(const std::wstring& archivePath,
     const ArchiveFormat format = formatFromPath(archivePath);
     for (int attempt = 0; attempt < 5; ++attempt) {
         try {
-            bit7z::BitArchiveReader reader{m_library->library, archivePath, toInFormat(format), password};
+            std::optional<ScopedTempPath> nested;
+            std::wstring openPath = archivePath;
+            ArchiveFormat openFormat = format;
+            if (format == ArchiveFormat::TarGz) {
+                nested.emplace(materializeTarFromGzip(m_library->library, archivePath, hooks));
+                openPath = nested->wstring();
+                openFormat = ArchiveFormat::Tar;
+            }
+            bit7z::BitArchiveReader reader{m_library->library, openPath, toInFormat(openFormat), password};
             ArchiveInfo info;
             info.path = archivePath;
             info.format = format;
@@ -1108,7 +1235,15 @@ ExtractResult ArchiveService::extract(const ExtractRequest& request, const Opera
             try {
                 const ArchiveFormat format = formatFromPath(current.archivePath);
                 fs::create_directories(current.outputDir);
-                bit7z::BitFileExtractor extractor{m_library->library, toInFormat(format)};
+                std::optional<ScopedTempPath> nested;
+                std::wstring openPath = current.archivePath;
+                ArchiveFormat openFormat = format;
+                if (format == ArchiveFormat::TarGz) {
+                    nested.emplace(materializeTarFromGzip(m_library->library, current.archivePath, hooks));
+                    openPath = nested->wstring();
+                    openFormat = ArchiveFormat::Tar;
+                }
+                bit7z::BitFileExtractor extractor{m_library->library, toInFormat(openFormat)};
                 extractor.setOverwriteMode(current.overwrite == OverwritePolicy::Skip ? bit7z::OverwriteMode::Skip
                                                                                        : bit7z::OverwriteMode::Overwrite);
                 if (!current.password.empty()) {
@@ -1116,9 +1251,9 @@ ExtractResult ArchiveService::extract(const ExtractRequest& request, const Opera
                 }
                 bindHooks(extractor, hooks);
                 if (current.indices.empty()) {
-                    extractor.extract(current.archivePath, current.outputDir);
+                    extractor.extract(openPath, current.outputDir);
                 } else {
-                    extractor.extractItems(current.archivePath, current.indices, current.outputDir);
+                    extractor.extractItems(openPath, current.indices, current.outputDir);
                 }
                 return summarize();
             } catch (const bit7z::BitException& error) {
@@ -1161,8 +1296,8 @@ void ArchiveService::move(const ExtractRequest& request, const OperationHooks& h
     };
     checkCancelled();
     const auto info = read(request.archivePath, request.password, hooks);
-    if (info.format == ArchiveFormat::Rar)
-        throw ArchiveError(ErrorKind::Other, L"不能从 RAR 移除文件，请使用复制。");
+    if (isReadOnlyFormat(info.format))
+        throw ArchiveError(ErrorKind::Other, L"不能从该格式移除文件，请使用复制。");
     for (auto index : request.indices) {
         if (std::none_of(info.entries.begin(), info.entries.end(),
                          [index](const auto& entry) { return entry.index == index; }))
@@ -1240,8 +1375,8 @@ void ArchiveService::compress(const CompressRequest& request, const OperationHoo
             throw ArchiveError(ErrorKind::Other, L"找不到要压缩的文件：" + input);
         }
     }
-    if (request.format == ArchiveFormat::Rar) {
-        throw ArchiveError(ErrorKind::Other, L"不能创建 RAR，只能打开和解压。");
+    if (isReadOnlyFormat(request.format)) {
+        throw ArchiveError(ErrorKind::Other, L"不能创建该格式，只能打开和解压。目前可创建 ZIP、7z。");
     }
     if (request.sfx && request.format != ArchiveFormat::SevenZip) {
         throw ArchiveError(ErrorKind::Other, L"自解压程序只支持 7z。");
@@ -1299,8 +1434,8 @@ void ArchiveService::compress(const CompressRequest& request, const OperationHoo
 }
 
 void ArchiveService::append(const AppendRequest& request, const OperationHooks& hooks) const {
-    if (formatFromPath(request.archivePath) == ArchiveFormat::Rar) {
-        throw ArchiveError(ErrorKind::Other, L"不能修改 RAR，只能打开和解压。");
+    if (isReadOnlyFormat(formatFromPath(request.archivePath))) {
+        throw ArchiveError(ErrorKind::Other, L"不能修改该格式，只能打开和解压。");
     }
     if (!fs::exists(request.archivePath)) {
         throw ArchiveError(ErrorKind::Other, L"找不到压缩包。");
@@ -1368,8 +1503,16 @@ std::vector<std::uint8_t> ArchiveService::readItem(const std::wstring& archivePa
     };
     for (int attempt = 0; attempt < 5; ++attempt) {
         try {
+            std::optional<ScopedTempPath> nested;
+            std::wstring openPath = archivePath;
+            ArchiveFormat openFormat = format;
+            if (format == ArchiveFormat::TarGz) {
+                nested.emplace(materializeTarFromGzip(m_library->library, archivePath, hooks));
+                openPath = nested->wstring();
+                openFormat = ArchiveFormat::Tar;
+            }
             if (maxBytes > 0) {
-                bit7z::BitArchiveReader reader{m_library->library, archivePath, toInFormat(format), password};
+                bit7z::BitArchiveReader reader{m_library->library, openPath, toInFormat(openFormat), password};
                 const auto items = reader.items();
                 bool found = false;
                 for (const auto& item : items) {
@@ -1417,14 +1560,14 @@ std::vector<std::uint8_t> ArchiveService::readItem(const std::wstring& archivePa
                 }
             };
 
-            bit7z::BitFileExtractor extractor{m_library->library, toInFormat(format)};
+            bit7z::BitFileExtractor extractor{m_library->library, toInFormat(openFormat)};
             if (!password.empty()) {
                 extractor.setPassword(password);
             }
             bindHooks(extractor, limited);
             std::vector<bit7z::byte_t> buffer;
             try {
-                extractor.extract(archivePath, buffer, index);
+                extractor.extract(openPath, buffer, index);
             } catch (const bit7z::BitException&) {
                 if (limitHit.load()) {
                     buffer.clear();
@@ -1505,8 +1648,8 @@ void editArchive(const bit7z::Bit7zLibrary& library,
                  const OperationHooks& hooks,
                  Operation operation) {
     const ArchiveFormat format = formatFromPath(archivePath);
-    if (format == ArchiveFormat::Rar) {
-        throw ArchiveError(ErrorKind::Other, L"不能修改 RAR，只能打开和解压。");
+    if (isReadOnlyFormat(format)) {
+        throw ArchiveError(ErrorKind::Other, L"不能修改该格式，只能打开和解压。");
     }
     ensureZipPassword(format, password);
     for (int attempt = 0; attempt < 5; ++attempt) {
@@ -1550,12 +1693,20 @@ void ArchiveService::test(const std::wstring& archivePath, std::wstring password
     const ArchiveFormat format = formatFromPath(archivePath);
     for (int attempt = 0; attempt < 5; ++attempt) {
         try {
-            bit7z::BitFileExtractor extractor{m_library->library, toInFormat(format)};
+            std::optional<ScopedTempPath> nested;
+            std::wstring openPath = archivePath;
+            ArchiveFormat openFormat = format;
+            if (format == ArchiveFormat::TarGz) {
+                nested.emplace(materializeTarFromGzip(m_library->library, archivePath, hooks));
+                openPath = nested->wstring();
+                openFormat = ArchiveFormat::Tar;
+            }
+            bit7z::BitFileExtractor extractor{m_library->library, toInFormat(openFormat)};
             if (!password.empty()) {
                 extractor.setPassword(password);
             }
             bindHooks(extractor, hooks);
-            extractor.test(archivePath);
+            extractor.test(openPath);
             return;
         } catch (const bit7z::BitException& error) {
             ArchiveError translated(ErrorKind::Other, L"");
