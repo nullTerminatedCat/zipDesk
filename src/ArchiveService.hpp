@@ -142,10 +142,18 @@ public:
     void compress(const CompressRequest& request, const OperationHooks& hooks) const;
     void append(const AppendRequest& request, const OperationHooks& hooks) const;
     void test(const std::wstring& archivePath, std::wstring password, const OperationHooks& hooks) const;
+    // Soft cap for preview / in-window text edit. Callers that extract to disk
+    // should not use this; pass 0 to readItem for an unlimited extract.
+    static constexpr std::uint64_t kMaxInMemoryExtractBytes = 2ull * 1024 * 1024;
+
+    // When maxBytes > 0, refuse if the entry's declared size exceeds the cap,
+    // cancel mid-extract once processed bytes exceed it, and refuse an oversized
+    // buffer even when the archive lied about size.
     std::vector<std::uint8_t> readItem(const std::wstring& archivePath,
                                        std::uint32_t index,
                                        std::wstring password,
-                                       const OperationHooks& hooks) const;
+                                       const OperationHooks& hooks,
+                                       std::uint64_t maxBytes = 0) const;
     struct RepairResult {
         int recovered = 0;
         int failed = 0;

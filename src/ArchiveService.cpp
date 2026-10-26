@@ -1359,18 +1359,88 @@ void ArchiveService::append(const AppendRequest& request, const OperationHooks& 
 std::vector<std::uint8_t> ArchiveService::readItem(const std::wstring& archivePath,
                                                    std::uint32_t index,
                                                    std::wstring password,
-                                                   const OperationHooks& hooks) const {
+                                                   const OperationHooks& hooks,
+                                                   std::uint64_t maxBytes) const {
     const ArchiveFormat format = formatFromPath(archivePath);
+    const auto sizeLimitMessage = [maxBytes]() {
+        return L"文件超过内存解压上限（" + std::to_wstring(maxBytes / (1024 * 1024)) +
+               L" MB），请改为解压到磁盘后再打开。";
+    };
     for (int attempt = 0; attempt < 5; ++attempt) {
         try {
+            if (maxBytes > 0) {
+                bit7z::BitArchiveReader reader{m_library->library, archivePath, toInFormat(format), password};
+                const auto items = reader.items();
+                bool found = false;
+                for (const auto& item : items) {
+                    if (item.index() != index) {
+                        continue;
+                    }
+                    found = true;
+                    if (!item.isDir() && item.size() > maxBytes) {
+                        throw ArchiveError(ErrorKind::Other, sizeLimitMessage());
+                    }
+                    break;
+                }
+                if (!found) {
+                    throw ArchiveError(ErrorKind::Other, L"找不到要读取的文件。");
+                }
+            }
+
+            std::atomic_bool limitHit{false};
+            std::atomic_bool combinedCancel{false};
+            OperationHooks limited = hooks;
+            limited.cancel = &combinedCancel;
+            const auto userCancel = hooks.cancel;
+            const auto userProgress = hooks.onProgress;
+            const auto userTotal = hooks.onTotal;
+            limited.onTotal = [userTotal, maxBytes, &limitHit, &combinedCancel](std::uint64_t total) {
+                if (maxBytes > 0 && total > maxBytes) {
+                    limitHit.store(true);
+                    combinedCancel.store(true);
+                }
+                if (userTotal) {
+                    userTotal(total);
+                }
+            };
+            limited.onProgress = [userProgress, userCancel, maxBytes, &limitHit,
+                                  &combinedCancel](std::uint64_t processed) {
+                if (userCancel != nullptr && userCancel->load()) {
+                    combinedCancel.store(true);
+                }
+                if (maxBytes > 0 && processed > maxBytes) {
+                    limitHit.store(true);
+                    combinedCancel.store(true);
+                }
+                if (userProgress) {
+                    userProgress(processed);
+                }
+            };
+
             bit7z::BitFileExtractor extractor{m_library->library, toInFormat(format)};
             if (!password.empty()) {
                 extractor.setPassword(password);
             }
-            bindHooks(extractor, hooks);
+            bindHooks(extractor, limited);
             std::vector<bit7z::byte_t> buffer;
-            extractor.extract(archivePath, buffer, index);
+            try {
+                extractor.extract(archivePath, buffer, index);
+            } catch (const bit7z::BitException&) {
+                if (limitHit.load()) {
+                    buffer.clear();
+                    buffer.shrink_to_fit();
+                    throw ArchiveError(ErrorKind::Other, sizeLimitMessage());
+                }
+                throw;
+            }
+            if (maxBytes > 0 && buffer.size() > maxBytes) {
+                buffer.clear();
+                buffer.shrink_to_fit();
+                throw ArchiveError(ErrorKind::Other, sizeLimitMessage());
+            }
             return std::vector<std::uint8_t>(buffer.begin(), buffer.end());
+        } catch (const ArchiveError&) {
+            throw;
         } catch (const bit7z::BitException& error) {
             ArchiveError translated(ErrorKind::Other, L"");
             try {

@@ -738,6 +738,62 @@ void testMove(zipdesk::ArchiveService& service, const fs::path& root, zipdesk::A
 }
 
 
+void testReadItemSizeLimit(zipdesk::ArchiveService& service, const fs::path& root) {
+    const fs::path source = root / "src";
+    const fs::path archive = root / "limit.zip";
+    writeFile(source / "small.txt", "ok");
+    writeFile(source / "big.bin", std::string(3 * 1024 * 1024, 'A'));
+
+    zipdesk::CompressRequest request;
+    request.inputs = {source.wstring()};
+    request.outputPath = archive.wstring();
+    request.format = zipdesk::ArchiveFormat::Zip;
+    request.level = zipdesk::CompressionLevel::Store;
+    service.compress(request, {});
+
+    const zipdesk::ArchiveInfo info = service.read(archive.wstring(), L"", {});
+    std::uint32_t smallIndex = 0;
+    std::uint32_t bigIndex = 0;
+    bool haveSmall = false;
+    bool haveBig = false;
+    for (const auto& entry : info.entries) {
+        if (entry.isDir) continue;
+        if (entry.name == L"small.txt") {
+            smallIndex = entry.index;
+            haveSmall = true;
+        }
+        if (entry.name == L"big.bin") {
+            bigIndex = entry.index;
+            haveBig = true;
+            check(entry.size == 3ull * 1024 * 1024, "big entry reports declared size");
+        }
+    }
+    check(haveSmall && haveBig, "limit archive has small and big entries");
+
+    const zipdesk::OperationHooks noHooks;
+    const std::vector<std::uint8_t> smallBytes = service.readItem(
+        archive.wstring(), smallIndex, L"", noHooks, zipdesk::ArchiveService::kMaxInMemoryExtractBytes);
+    check(smallBytes.size() == 2 && smallBytes[0] == 'o' && smallBytes[1] == 'k',
+          "small item reads under limit");
+
+    bool rejected = false;
+    std::wstring message;
+    try {
+        (void)service.readItem(archive.wstring(), bigIndex, L"", noHooks,
+                               zipdesk::ArchiveService::kMaxInMemoryExtractBytes);
+    } catch (const zipdesk::ArchiveError& error) {
+        rejected = true;
+        message = error.message();
+    }
+    check(rejected, "oversized item refused by readItem maxBytes");
+    check(message.find(L"内存解压上限") != std::wstring::npos && message.find(L"2") != std::wstring::npos,
+          "size-limit error mentions in-memory cap");
+
+    const std::vector<std::uint8_t> unlimited = service.readItem(archive.wstring(), bigIndex, L"", noHooks, 0);
+    check(unlimited.size() == 3ull * 1024 * 1024, "unlimited readItem still returns full payload");
+}
+
+
 void testClassicContextMenuRegistry() {
     const bool win11 = zipdesk::isWindows11ForClassicMenu();
     check(win11, "classic menu helper should detect Windows 11 on this CI machine");
@@ -774,6 +830,7 @@ int main() {
 
     try {
         zipdesk::ArchiveService service(exeDirectory() + L"\\7z.dll");
+        testReadItemSizeLimit(service, root / L"read-limit");
         testRoundTrip(service, zipdesk::ArchiveFormat::Zip, root / "zip");
         testRoundTrip(service, zipdesk::ArchiveFormat::SevenZip, root / "7z");
         testOverwriteAndCancel(service, root / "zip");

@@ -7,7 +7,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root
-$version = '0.2.10'
+$version = '0.2.11'
 $name = "QingXia-$version-windows-$Architecture"
 if (!$BuildDirectory) { $BuildDirectory = if ($Architecture -eq 'x86') { 'build-x86' } else { 'build' } }
 $archive = Join-Path $root "dist/$name-portable.zip"

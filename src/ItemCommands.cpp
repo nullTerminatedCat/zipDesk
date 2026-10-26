@@ -382,53 +382,72 @@ void MainWindow::updatePreview() {
     ++m_previewGeneration;
     m_previewTimer->stop();
     if (m_previewCancel) m_previewCancel->store(true);
-    m_previewHint->setText("选择文件可预览文本或图片");
+    m_previewHint->setText(zipdesk::translate("选择文件可预览文本或图片"));
     m_previewStack->setCurrentIndex(0);
     if (!m_previewButton->isChecked() || m_busy || m_job->isRunning()) return;
     const auto entry = selectedEntry();
-    if (!entry || entry->isDir || entry->size > 2 * 1024 * 1024) return;
+    if (!entry || entry->isDir) return;
     const QString name = QString::fromStdWString(entry->name);
     if (!isTextFile(name) && !isImageFile(name)) return;
-    m_previewHint->setText("正在加载预览…");
+    if (entry->size > zipdesk::ArchiveService::kMaxInMemoryExtractBytes) {
+        m_previewHint->setText(zipdesk::translate("文件超过预览上限（2 MB），请解压后查看"));
+        return;
+    }
+    m_previewHint->setText(zipdesk::translate("正在加载预览…"));
     m_previewTimer->start(160);
 }
 
 void MainWindow::startPreview() {
     if (m_previewThread != nullptr || !m_previewButton->isChecked() || m_busy || m_job->isRunning()) return;
     const auto entry = selectedEntry();
-    if (!entry || entry->isDir || entry->size > 2 * 1024 * 1024) return;
+    if (!entry || entry->isDir) return;
     const QString name = QString::fromStdWString(entry->name);
     if (!isTextFile(name) && !isImageFile(name)) return;
+    if (entry->size > zipdesk::ArchiveService::kMaxInMemoryExtractBytes) {
+        m_previewHint->setText(zipdesk::translate("文件超过预览上限（2 MB），请解压后查看"));
+        return;
+    }
     const auto generation = m_previewGeneration;
     const auto path = m_path;
     const auto password = m_password;
     const auto index = entry->index;
+    const auto maxBytes = zipdesk::ArchiveService::kMaxInMemoryExtractBytes;
     const auto dll = QDir(QCoreApplication::applicationDirPath()).filePath("7z.dll").toStdWString();
     auto result = std::make_shared<QByteArray>();
     auto success = std::make_shared<bool>(false);
+    auto limitExceeded = std::make_shared<bool>(false);
     auto cancel = std::make_shared<std::atomic_bool>(false);
     m_previewCancel = cancel;
-    auto* thread = QThread::create([path, password, index, dll, result, success, cancel]() {
+    auto* thread = QThread::create([path, password, index, dll, result, success, limitExceeded, cancel, maxBytes]() {
         try {
             zipdesk::ArchiveService service(dll);
             zipdesk::OperationHooks hooks;
             hooks.cancel = cancel.get();
-            const auto bytes = service.readItem(path, index, password, hooks);
+            const auto bytes = service.readItem(path, index, password, hooks, maxBytes);
             *result = QByteArray(reinterpret_cast<const char*>(bytes.data()), static_cast<qsizetype>(bytes.size()));
             *success = true;
+        } catch (const zipdesk::ArchiveError& error) {
+            const auto& message = error.message();
+            if (message.find(L"内存解压上限") != std::wstring::npos) {
+                *limitExceeded = true;
+            }
         } catch (const std::exception&) {
         }
     });
     m_previewThread = thread;
-    connect(thread, &QThread::finished, this, [this, thread, result, success, generation, name]() {
+    connect(thread, &QThread::finished, this, [this, thread, result, success, limitExceeded, generation, name]() {
         m_previewThread = nullptr;
         m_previewCancel.reset();
         if (generation != m_previewGeneration) {
             startPreview();
             return;
         }
+        if (*limitExceeded) {
+            m_previewHint->setText(zipdesk::translate("文件超过预览上限（2 MB），请解压后查看"));
+            return;
+        }
         if (!*success) {
-            m_previewHint->setText("无法预览此文件");
+            m_previewHint->setText(zipdesk::translate("无法预览此文件"));
             return;
         }
         if (isImageFile(name)) {
@@ -437,7 +456,7 @@ void MainWindow::startPreview() {
                 m_previewImage->setPixmap(pixmap.scaled(360, 360, Qt::KeepAspectRatio, Qt::SmoothTransformation));
                 m_previewStack->setCurrentWidget(m_previewImage);
             } else {
-                m_previewHint->setText("无法预览此图片");
+                m_previewHint->setText(zipdesk::translate("无法预览此图片"));
             }
         } else {
             m_previewText->setPlainText(QString::fromUtf8(*result));
@@ -475,7 +494,14 @@ void MainWindow::editSelected() {
     const QString name = QString::fromStdWString(entry->name);
     if (isTextFile(name)) {
         try {
-            const std::vector<std::uint8_t> bytes = m_service.readItem(m_path, entry->index, m_password, {});
+            if (entry->size > zipdesk::ArchiveService::kMaxInMemoryExtractBytes) {
+                QMessageBox::information(
+                    this, zipdesk::translate("编辑"),
+                    zipdesk::translate("文件超过内存编辑上限（2 MB），请解压到磁盘后用外部编辑器打开。"));
+                return;
+            }
+            const std::vector<std::uint8_t> bytes = m_service.readItem(
+                m_path, entry->index, m_password, {}, zipdesk::ArchiveService::kMaxInMemoryExtractBytes);
             QDialog dialog(this);
             dialog.setWindowTitle("编辑");
             auto* layout = new QVBoxLayout(&dialog);
