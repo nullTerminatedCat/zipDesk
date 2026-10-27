@@ -120,9 +120,16 @@ const bit7z::BitInFormat& toInFormat(ArchiveFormat format) {
     if (format == ArchiveFormat::GZip) {
         return bit7z::BitFormat::GZip;
     }
+    if (format == ArchiveFormat::Xz) {
+        return bit7z::BitFormat::Xz;
+    }
     if (format == ArchiveFormat::TarGz) {
         // Compound gzip+tar is materialized to a temp .tar before bit7z sees it.
         throw ArchiveError(ErrorKind::Other, L"内部错误：TAR.GZ 需要先展开内层 TAR。");
+    }
+    if (format == ArchiveFormat::TarXz) {
+        // Compound xz+tar is materialized to a temp .tar before bit7z sees it.
+        throw ArchiveError(ErrorKind::Other, L"内部错误：TAR.XZ 需要先展开内层 TAR。");
     }
     return toFormat(format);
 }
@@ -353,21 +360,22 @@ private:
     fs::path m_path;
 };
 
-// Extracts the single gzip member to a temp .tar so TarGz can be listed/extracted
-// as a normal TAR.
-ScopedTempPath materializeTarFromGzip(const bit7z::Bit7zLibrary& library,
-                                      const std::wstring& gzipPath,
-                                      const OperationHooks& hooks) {
+// Extracts the single compressed stream member to a temp .tar so TarGz / TarXz
+// can be listed/extracted as a normal TAR.
+ScopedTempPath materializeTarFromStream(const bit7z::Bit7zLibrary& library,
+                                        const std::wstring& archivePath,
+                                        const bit7z::BitInFormat& streamFormat,
+                                        const OperationHooks& hooks) {
     const fs::path tempTar = makeTempTarPath();
     try {
-        bit7z::BitFileExtractor extractor{library, bit7z::BitFormat::GZip};
+        bit7z::BitFileExtractor extractor{library, streamFormat};
         bindHooks(extractor, hooks);
         std::ofstream output(tempTar, std::ios::binary | std::ios::trunc);
         if (!output) {
             removePath(tempTar);
             throw ArchiveError(ErrorKind::Other, L"无法创建临时 TAR 文件。");
         }
-        extractor.extract(gzipPath, output, 0);
+        extractor.extract(archivePath, output, 0);
         output.close();
         if (!output) {
             removePath(tempTar);
@@ -381,6 +389,19 @@ ScopedTempPath materializeTarFromGzip(const bit7z::Bit7zLibrary& library,
         removePath(tempTar);
         throw;
     }
+}
+
+ScopedTempPath materializeNestedTar(const bit7z::Bit7zLibrary& library,
+                                    const std::wstring& archivePath,
+                                    ArchiveFormat format,
+                                    const OperationHooks& hooks) {
+    if (format == ArchiveFormat::TarGz) {
+        return materializeTarFromStream(library, archivePath, bit7z::BitFormat::GZip, hooks);
+    }
+    if (format == ArchiveFormat::TarXz) {
+        return materializeTarFromStream(library, archivePath, bit7z::BitFormat::Xz, hooks);
+    }
+    throw ArchiveError(ErrorKind::Other, L"内部错误：非复合压缩 TAR。");
 }
 
 
@@ -506,12 +527,12 @@ bool pathInside(const std::wstring& parent, const std::wstring& child) {
 
 
 std::wstring readableFormatsHint() {
-    return L"目前可读取 ZIP、7z、RAR、TAR、GZIP、TAR.GZ；可创建 ZIP、7z。";
+    return L"目前可读取 ZIP、7z、RAR、TAR、GZIP、TAR.GZ、XZ、TAR.XZ；可创建 ZIP、7z。";
 }
 
 bool isReadOnlyFormat(ArchiveFormat format) {
     return format == ArchiveFormat::Rar || format == ArchiveFormat::Tar || format == ArchiveFormat::GZip ||
-           format == ArchiveFormat::TarGz;
+           format == ArchiveFormat::TarGz || format == ArchiveFormat::Xz || format == ArchiveFormat::TarXz;
 }
 
 ContentFormat sniffContentFormat(const std::wstring& path) {
@@ -625,6 +646,12 @@ std::optional<ArchiveFormat> formatFromExtension(const std::wstring& path) {
     if (extension == L".gz") {
         return ArchiveFormat::GZip;
     }
+    if (extension == L".txz" || extension == L".tar.xz") {
+        return ArchiveFormat::TarXz;
+    }
+    if (extension == L".xz") {
+        return ArchiveFormat::Xz;
+    }
     return std::nullopt;
 }
 
@@ -640,18 +667,19 @@ std::optional<ArchiveFormat> readableFromContent(ContentFormat sniffed) {
         return ArchiveFormat::Tar;
     case ContentFormat::GZip:
         return ArchiveFormat::GZip;
+    case ContentFormat::Xz:
+        return ArchiveFormat::Xz;
     default:
         return std::nullopt;
     }
 }
 
 bool isRecognizedUnsupported(ContentFormat sniffed) {
-    return sniffed == ContentFormat::Xz || sniffed == ContentFormat::Iso;
+    return sniffed == ContentFormat::Iso;
 }
 
 ContentFormat unsupportedFromExtension(const std::wstring& path) {
     const std::wstring extension = lowerExtension(path);
-    if (extension == L".xz" || extension == L".txz" || extension == L".tar.xz") return ContentFormat::Xz;
     if (extension == L".iso") return ContentFormat::Iso;
     if (extension == L".zipx") return ContentFormat::Zip;  // treated specially by caller
     return ContentFormat::Unknown;
@@ -671,6 +699,10 @@ std::wstring archiveFormatName(ArchiveFormat format) {
         return L"GZIP";
     case ArchiveFormat::TarGz:
         return L"TAR.GZ";
+    case ArchiveFormat::Xz:
+        return L"XZ";
+    case ArchiveFormat::TarXz:
+        return L"TAR.XZ";
     }
     return L"未知";
 }
@@ -727,19 +759,26 @@ ArchiveFormat formatFromPath(const std::wstring& path) {
     }
     if (const ContentFormat pretended = unsupportedFromExtension(path); pretended != ContentFormat::Unknown &&
         !readableFromContent(sniffed)) {
-        // Extension claims XZ/ISO (or ZIPX handled above) and content did not override.
+        // Extension claims ISO (or ZIPX handled above) and content did not override.
         throwUnsupported(pretended, byExt);
     }
 
-    // Prefer compound TAR.GZ when the extension says so and content is gzip (or unknown).
+    // Prefer compound TAR.GZ / TAR.XZ when the extension says so and content matches (or unknown).
     if (byExt && *byExt == ArchiveFormat::TarGz &&
         (sniffed == ContentFormat::GZip || sniffed == ContentFormat::Unknown)) {
         return ArchiveFormat::TarGz;
     }
+    if (byExt && *byExt == ArchiveFormat::TarXz &&
+        (sniffed == ContentFormat::Xz || sniffed == ContentFormat::Unknown)) {
+        return ArchiveFormat::TarXz;
+    }
     if (const auto byContent = readableFromContent(sniffed)) {
-        // Plain .gz that is gzip stays GZip; .tar.gz already returned above.
+        // Plain .gz/.xz stay stream formats; compound extensions already returned above.
         if (*byContent == ArchiveFormat::GZip && byExt && *byExt == ArchiveFormat::TarGz) {
             return ArchiveFormat::TarGz;
+        }
+        if (*byContent == ArchiveFormat::Xz && byExt && *byExt == ArchiveFormat::TarXz) {
+            return ArchiveFormat::TarXz;
         }
         return *byContent;
     }
@@ -857,8 +896,8 @@ ArchiveInfo ArchiveService::read(const std::wstring& archivePath,
             std::optional<ScopedTempPath> nested;
             std::wstring openPath = archivePath;
             ArchiveFormat openFormat = format;
-            if (format == ArchiveFormat::TarGz) {
-                nested.emplace(materializeTarFromGzip(m_library->library, archivePath, hooks));
+            if (format == ArchiveFormat::TarGz || format == ArchiveFormat::TarXz) {
+                nested.emplace(materializeNestedTar(m_library->library, archivePath, format, hooks));
                 openPath = nested->wstring();
                 openFormat = ArchiveFormat::Tar;
             }
@@ -1238,8 +1277,8 @@ ExtractResult ArchiveService::extract(const ExtractRequest& request, const Opera
                 std::optional<ScopedTempPath> nested;
                 std::wstring openPath = current.archivePath;
                 ArchiveFormat openFormat = format;
-                if (format == ArchiveFormat::TarGz) {
-                    nested.emplace(materializeTarFromGzip(m_library->library, current.archivePath, hooks));
+                if (format == ArchiveFormat::TarGz || format == ArchiveFormat::TarXz) {
+                    nested.emplace(materializeNestedTar(m_library->library, current.archivePath, format, hooks));
                     openPath = nested->wstring();
                     openFormat = ArchiveFormat::Tar;
                 }
@@ -1506,8 +1545,8 @@ std::vector<std::uint8_t> ArchiveService::readItem(const std::wstring& archivePa
             std::optional<ScopedTempPath> nested;
             std::wstring openPath = archivePath;
             ArchiveFormat openFormat = format;
-            if (format == ArchiveFormat::TarGz) {
-                nested.emplace(materializeTarFromGzip(m_library->library, archivePath, hooks));
+            if (format == ArchiveFormat::TarGz || format == ArchiveFormat::TarXz) {
+                nested.emplace(materializeNestedTar(m_library->library, archivePath, format, hooks));
                 openPath = nested->wstring();
                 openFormat = ArchiveFormat::Tar;
             }
@@ -1696,8 +1735,8 @@ void ArchiveService::test(const std::wstring& archivePath, std::wstring password
             std::optional<ScopedTempPath> nested;
             std::wstring openPath = archivePath;
             ArchiveFormat openFormat = format;
-            if (format == ArchiveFormat::TarGz) {
-                nested.emplace(materializeTarFromGzip(m_library->library, archivePath, hooks));
+            if (format == ArchiveFormat::TarGz || format == ArchiveFormat::TarXz) {
+                nested.emplace(materializeNestedTar(m_library->library, archivePath, format, hooks));
                 openPath = nested->wstring();
                 openFormat = ArchiveFormat::Tar;
             }

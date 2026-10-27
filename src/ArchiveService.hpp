@@ -12,10 +12,10 @@
 
 namespace zipdesk {
 
-enum class ArchiveFormat : int { Zip, SevenZip, Rar, Tar, GZip, TarGz };
+enum class ArchiveFormat : int { Zip, SevenZip, Rar, Tar, GZip, TarGz, Xz, TarXz };
 
 // Result of reading the file header (and a few common extensions). Readable formats
-// include Zip/SevenZip/Rar/Tar/GZip/TarGz; Xz/Iso are recognized so we can explain the limit.
+// include Zip/SevenZip/Rar/Tar/GZip/TarGz/Xz/TarXz; Iso is recognized so we can explain the limit.
 enum class ContentFormat : int { Unknown, Zip, SevenZip, Rar, Tar, GZip, Xz, Iso };
 
 enum class CompressionLevel : int { Store, Fast, Normal, Maximum };

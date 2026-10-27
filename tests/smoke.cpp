@@ -141,15 +141,27 @@ void testContentSniff(const fs::path& root) {
 
     const fs::path xzFile = root / L"sample.xz";
     writeBytes(xzFile, {0xFD, '7', 'z', 'X', 'Z', 0x00});
-    bool rejectedXz = false;
-    std::wstring xzMessage;
+    check(zipdesk::sniffContentFormat(xzFile.wstring()) == zipdesk::ContentFormat::Xz, "sniff xz magic");
+    check(zipdesk::formatFromPath(xzFile.wstring()) == zipdesk::ArchiveFormat::Xz, "xz content is readable");
+    check(zipdesk::isReadOnlyFormat(zipdesk::ArchiveFormat::Xz), "xz is read-only");
+    check(zipdesk::isReadOnlyFormat(zipdesk::ArchiveFormat::TarXz), "tar.xz is read-only");
+    check(zipdesk::formatFromPath(L"C:\\missing.xz") == zipdesk::ArchiveFormat::Xz,
+          "missing xz path keeps extension");
+    check(zipdesk::formatFromPath(L"C:\\missing.tar.xz") == zipdesk::ArchiveFormat::TarXz,
+          "missing tar.xz path keeps compound extension");
+    check(zipdesk::formatFromPath(L"C:\\missing.txz") == zipdesk::ArchiveFormat::TarXz,
+          "missing txz path keeps TarXz");
+
+    writeBytes(root / L"named.iso", {0, 0, 0, 0});
+    bool rejectedIso = false;
+    std::wstring isoMessage;
     try {
-        (void)zipdesk::formatFromPath(xzFile.wstring());
+        (void)zipdesk::formatFromPath((root / L"named.iso").wstring());
     } catch (const zipdesk::ArchiveError& error) {
-        rejectedXz = true;
-        xzMessage = error.message();
+        rejectedIso = true;
+        isoMessage = error.message();
     }
-    check(rejectedXz && xzMessage.find(L"XZ") != std::wstring::npos, "xz remains unsupported");
+    check(rejectedIso && isoMessage.find(L"ISO") != std::wstring::npos, "iso remains unsupported");
 }
 
 void testDropDecision() {
@@ -900,6 +912,68 @@ void testTarGzipRead(zipdesk::ArchiveService& service, const fs::path& root) {
     check(rejectedEdit, "tar remains non-editable");
 }
 
+void testTarXzRead(zipdesk::ArchiveService& service, const fs::path& root) {
+    fs::create_directories(root / L"src");
+    writeFile(root / L"src" / L"hello.txt", "hello-tar-xz");
+    bit7z::Bit7zLibrary library(exeDirectory() + L"\\7z.dll");
+
+    const fs::path tarPath = root / L"sample.tar";
+    {
+        bit7z::BitFileCompressor compressor{library, bit7z::BitFormat::Tar};
+        compressor.compress({(root / L"src" / L"hello.txt").wstring()}, tarPath.wstring());
+    }
+
+    const fs::path xzPath = root / L"hello.txt.xz";
+    {
+        bit7z::BitFileCompressor compressor{library, bit7z::BitFormat::Xz};
+        compressor.compress({(root / L"src" / L"hello.txt").wstring()}, xzPath.wstring());
+    }
+    check(zipdesk::formatFromPath(xzPath.wstring()) == zipdesk::ArchiveFormat::Xz, "sample.xz format");
+    const zipdesk::OperationHooks noHooks;
+    const zipdesk::ArchiveInfo xzInfo = service.read(xzPath.wstring(), L"", noHooks);
+    check(xzInfo.format == zipdesk::ArchiveFormat::Xz && !xzInfo.entries.empty(), "xz lists one member");
+    const fs::path xzOut = root / L"out-xz";
+    zipdesk::ExtractRequest xzExtract;
+    xzExtract.archivePath = xzPath.wstring();
+    xzExtract.outputDir = xzOut.wstring();
+    xzExtract.overwrite = zipdesk::OverwritePolicy::Overwrite;
+    service.extract(xzExtract, noHooks);
+    check(readFile(findChild(xzOut, L"hello.txt")) == "hello-tar-xz", "xz extracts original file");
+
+    const fs::path tarXzPath = root / L"sample.tar.xz";
+    {
+        bit7z::BitFileCompressor compressor{library, bit7z::BitFormat::Xz};
+        compressor.compress({tarPath.wstring()}, tarXzPath.wstring());
+    }
+    check(zipdesk::formatFromPath(tarXzPath.wstring()) == zipdesk::ArchiveFormat::TarXz, "sample.tar.xz format");
+    const zipdesk::ArchiveInfo nested = service.read(tarXzPath.wstring(), L"", noHooks);
+    check(nested.format == zipdesk::ArchiveFormat::TarXz && containsPath(nested, L"hello.txt", 12),
+          "tar.xz lists inner tar members");
+    const fs::path nestedOut = root / L"out-tarxz";
+    zipdesk::ExtractRequest nestedExtract;
+    nestedExtract.archivePath = tarXzPath.wstring();
+    nestedExtract.outputDir = nestedOut.wstring();
+    nestedExtract.overwrite = zipdesk::OverwritePolicy::Overwrite;
+    service.extract(nestedExtract, noHooks);
+    check(readFile(findChild(nestedOut, L"hello.txt")) == "hello-tar-xz", "tar.xz extracts inner files");
+
+    const fs::path txzPath = root / L"sample.txz";
+    fs::copy_file(tarXzPath, txzPath);
+    check(zipdesk::formatFromPath(txzPath.wstring()) == zipdesk::ArchiveFormat::TarXz, "txz extension is TarXz");
+    const zipdesk::ArchiveInfo txzInfo = service.read(txzPath.wstring(), L"", noHooks);
+    check(containsPath(txzInfo, L"hello.txt", 12), "txz lists inner tar members");
+
+    bool rejectedEdit = false;
+    try {
+        service.append({xzPath.wstring(), {(root / L"src" / L"hello.txt").wstring()}, L"",
+                        zipdesk::CompressionLevel::Normal},
+                       noHooks);
+    } catch (const zipdesk::ArchiveError&) {
+        rejectedEdit = true;
+    }
+    check(rejectedEdit, "xz remains non-editable");
+}
+
 int main() {
     testClassicContextMenuRegistry();
     testSmartExtractDestination();
@@ -917,6 +991,7 @@ int main() {
         zipdesk::ArchiveService service(exeDirectory() + L"\\7z.dll");
         testReadItemSizeLimit(service, root / L"read-limit");
         testTarGzipRead(service, root / L"tar-gz");
+        testTarXzRead(service, root / L"tar-xz");
         testRoundTrip(service, zipdesk::ArchiveFormat::Zip, root / "zip");
         testRoundTrip(service, zipdesk::ArchiveFormat::SevenZip, root / "7z");
         testOverwriteAndCancel(service, root / "zip");
