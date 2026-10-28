@@ -826,7 +826,7 @@ void MainWindow::buildUi() {
     m_extractMenu = new QMenu(this);
     m_extractMenu->addAction("智能解压", this, [this]() {
         const QString path = m_path.empty()
-            ? QFileDialog::getOpenFileName(this, "选择要解压的压缩包", QString(), "压缩包 (*.zip *.7z *.rar *.tar *.gz *.tgz *.tar.gz *.xz *.txz *.tar.xz);;所有文件 (*.*)")
+            ? QFileDialog::getOpenFileName(this, "选择要解压的压缩包", QString(), "压缩包 (*.zip *.7z *.rar *.tar *.gz *.tgz *.tar.gz *.xz *.txz *.tar.xz *.iso);;所有文件 (*.*)")
             : QString::fromStdWString(m_path);
         if (!path.isEmpty()) smartExtract(path);
     });
@@ -1071,9 +1071,9 @@ void MainWindow::buildUi() {
     heroLayout->setSpacing(12);
     auto* heroCopy = new QVBoxLayout;
     heroCopy->setSpacing(10);
-    auto* eyebrow = new QLabel("青匣 · ZIP / 7Z / RAR / TAR / GZ / XZ", hero);
+    auto* eyebrow = new QLabel("青匣 · ZIP / 7Z / RAR / TAR / GZ / XZ / ISO", hero);
     eyebrow->setObjectName("heroEyebrow");
-    eyebrow->setProperty("i18n", "青匣 · ZIP / 7Z / RAR / TAR / GZ / XZ");
+    eyebrow->setProperty("i18n", "青匣 · ZIP / 7Z / RAR / TAR / GZ / XZ / ISO");
     auto* emptyTitle = new QLabel("文件收好，随时打开", hero);
     emptyTitle->setObjectName("emptyTitle");
     emptyTitle->setProperty("i18n", "文件收好，随时打开");
@@ -1135,9 +1135,9 @@ void MainWindow::buildUi() {
     m_recentList->setFixedHeight(40);
     recentLayout->addWidget(m_recentList);
     emptyLayout->addWidget(m_recentSection, 0, Qt::AlignHCenter);
-    auto* homeHint = new QLabel("支持 ZIP / 7z / RAR / TAR / GZ / XZ 浏览与解压 · ZIP / 7z 创建", empty);
+    auto* homeHint = new QLabel("支持 ZIP / 7z / RAR / TAR / GZ / XZ / ISO 浏览与解压 · ZIP / 7z 创建", empty);
     homeHint->setObjectName("homeHint");
-    homeHint->setProperty("i18n", "支持 ZIP / 7z / RAR / TAR / GZ / XZ 浏览与解压 · ZIP / 7z 创建");
+    homeHint->setProperty("i18n", "支持 ZIP / 7z / RAR / TAR / GZ / XZ / ISO 浏览与解压 · ZIP / 7z 创建");
     homeHint->setAlignment(Qt::AlignCenter);
     homeHint->setWordWrap(true);
     emptyLayout->addWidget(homeHint);
@@ -1929,7 +1929,7 @@ QStringList MainWindow::selectedTopLevelPaths() const {
 }
 
 void MainWindow::chooseAndOpen() {
-    const QString path = QFileDialog::getOpenFileName(this, "打开压缩包", QString(), "压缩包 (*.zip *.7z *.rar *.tar *.gz *.tgz *.tar.gz *.xz *.txz *.tar.xz);;所有文件 (*.*)");
+    const QString path = QFileDialog::getOpenFileName(this, "打开压缩包", QString(), "压缩包 (*.zip *.7z *.rar *.tar *.gz *.tgz *.tar.gz *.xz *.txz *.tar.xz *.iso);;所有文件 (*.*)");
     if (!path.isEmpty()) {
         openArchive(path);
     }
@@ -2253,7 +2253,7 @@ void MainWindow::extractArchive(bool selectedOnly, bool namedFolder) {
         if (selectedOnly) {
             return;
         }
-        const QString chosen = QFileDialog::getOpenFileName(this, "选择要解压的压缩包", QString(), "压缩包 (*.zip *.7z *.rar *.tar *.gz *.tgz *.tar.gz *.xz *.txz *.tar.xz);;所有文件 (*.*)");
+        const QString chosen = QFileDialog::getOpenFileName(this, "选择要解压的压缩包", QString(), "压缩包 (*.zip *.7z *.rar *.tar *.gz *.tgz *.tar.gz *.xz *.txz *.tar.xz *.iso);;所有文件 (*.*)");
         if (chosen.isEmpty()) {
             return;
         }

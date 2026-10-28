@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -152,16 +153,29 @@ void testContentSniff(const fs::path& root) {
     check(zipdesk::formatFromPath(L"C:\\missing.txz") == zipdesk::ArchiveFormat::TarXz,
           "missing txz path keeps TarXz");
 
-    writeBytes(root / L"named.iso", {0, 0, 0, 0});
-    bool rejectedIso = false;
-    std::wstring isoMessage;
+    // Minimal CD001 signature so sniff recognizes ISO without a full image.
+    std::vector<unsigned char> isoHeader(0x8008, 0);
+    const char cd001[] = "CD001";
+    for (int i = 0; i < 5; ++i) isoHeader[0x8001 + i] = static_cast<unsigned char>(cd001[i]);
+    writeBytes(root / L"named.iso", isoHeader);
+    check(zipdesk::sniffContentFormat((root / L"named.iso").wstring()) == zipdesk::ContentFormat::Iso,
+          "sniff iso CD001");
+    check(zipdesk::formatFromPath((root / L"named.iso").wstring()) == zipdesk::ArchiveFormat::Iso,
+          "iso content is readable");
+    check(zipdesk::isReadOnlyFormat(zipdesk::ArchiveFormat::Iso), "iso is read-only");
+    check(zipdesk::formatFromPath(L"C:\\missing.iso") == zipdesk::ArchiveFormat::Iso,
+          "missing iso path keeps extension");
+
+    writeBytes(root / L"named.zipx", {'P', 'K', 0x03, 0x04});
+    bool rejectedZipx = false;
+    std::wstring zipxMessage;
     try {
-        (void)zipdesk::formatFromPath((root / L"named.iso").wstring());
+        (void)zipdesk::formatFromPath((root / L"named.zipx").wstring());
     } catch (const zipdesk::ArchiveError& error) {
-        rejectedIso = true;
-        isoMessage = error.message();
+        rejectedZipx = true;
+        zipxMessage = error.message();
     }
-    check(rejectedIso && isoMessage.find(L"ISO") != std::wstring::npos, "iso remains unsupported");
+    check(rejectedZipx && zipxMessage.find(L"ZIPX") != std::wstring::npos, "zipx remains unsupported");
 }
 
 void testDropDecision() {
@@ -974,6 +988,166 @@ void testTarXzRead(zipdesk::ArchiveService& service, const fs::path& root) {
     check(rejectedEdit, "xz remains non-editable");
 }
 
+
+void writeMinimalIso(const fs::path& path, const std::string& content) {
+    constexpr std::size_t SECTOR = 2048;
+    const auto both32 = [](std::uint32_t n) {
+        std::array<unsigned char, 8> out{};
+        out[0] = static_cast<unsigned char>(n);
+        out[1] = static_cast<unsigned char>(n >> 8);
+        out[2] = static_cast<unsigned char>(n >> 16);
+        out[3] = static_cast<unsigned char>(n >> 24);
+        out[4] = static_cast<unsigned char>(n >> 24);
+        out[5] = static_cast<unsigned char>(n >> 16);
+        out[6] = static_cast<unsigned char>(n >> 8);
+        out[7] = static_cast<unsigned char>(n);
+        return out;
+    };
+    const auto both16 = [](std::uint16_t n) {
+        std::array<unsigned char, 4> out{};
+        out[0] = static_cast<unsigned char>(n);
+        out[1] = static_cast<unsigned char>(n >> 8);
+        out[2] = static_cast<unsigned char>(n >> 8);
+        out[3] = static_cast<unsigned char>(n);
+        return out;
+    };
+    const auto dirRecord = [&](std::uint32_t extent, std::uint32_t size, unsigned char flags,
+                               const std::vector<unsigned char>& name) {
+        std::size_t length = 33 + name.size();
+        if (length % 2 == 1) ++length;
+        std::vector<unsigned char> rec(length, 0);
+        rec[0] = static_cast<unsigned char>(length);
+        const auto e = both32(extent);
+        const auto s = both32(size);
+        const auto v = both16(1);
+        std::copy(e.begin(), e.end(), rec.begin() + 2);
+        std::copy(s.begin(), s.end(), rec.begin() + 10);
+        rec[25] = flags;
+        std::copy(v.begin(), v.end(), rec.begin() + 28);
+        rec[32] = static_cast<unsigned char>(name.size());
+        std::copy(name.begin(), name.end(), rec.begin() + 33);
+        return rec;
+    };
+    const auto pathTable = [&](std::uint32_t extent, bool little) {
+        std::vector<unsigned char> rec;
+        rec.push_back(1);
+        rec.push_back(0);
+        if (little) {
+            rec.push_back(static_cast<unsigned char>(extent));
+            rec.push_back(static_cast<unsigned char>(extent >> 8));
+            rec.push_back(static_cast<unsigned char>(extent >> 16));
+            rec.push_back(static_cast<unsigned char>(extent >> 24));
+            rec.push_back(1);
+            rec.push_back(0);
+        } else {
+            rec.push_back(static_cast<unsigned char>(extent >> 24));
+            rec.push_back(static_cast<unsigned char>(extent >> 16));
+            rec.push_back(static_cast<unsigned char>(extent >> 8));
+            rec.push_back(static_cast<unsigned char>(extent));
+            rec.push_back(0);
+            rec.push_back(1);
+        }
+        rec.push_back(0);
+        rec.push_back(0);  // pad for odd name length
+        return rec;
+    };
+
+    constexpr std::uint32_t rootExtent = 20;
+    constexpr std::uint32_t pathTableL = 18;
+    constexpr std::uint32_t pathTableM = 19;
+    constexpr std::uint32_t fileExtent = 21;
+    const std::uint32_t fileSize = static_cast<std::uint32_t>(content.size());
+    const auto ptL = pathTable(rootExtent, true);
+    const auto ptM = pathTable(rootExtent, false);
+    auto rootDir = dirRecord(rootExtent, static_cast<std::uint32_t>(SECTOR), 0x02, {0x00});
+    const auto dotdot = dirRecord(rootExtent, static_cast<std::uint32_t>(SECTOR), 0x02, {0x01});
+    const std::vector<unsigned char> fileName = {'H','E','L','L','O','.','T','X','T',';','1'};
+    const auto fileRec = dirRecord(fileExtent, fileSize, 0x00, fileName);
+    rootDir.insert(rootDir.end(), dotdot.begin(), dotdot.end());
+    rootDir.insert(rootDir.end(), fileRec.begin(), fileRec.end());
+    rootDir.resize(SECTOR, 0);
+
+    std::vector<unsigned char> pvd(SECTOR, 0);
+    pvd[0] = 1;
+    const char cd001[] = "CD001";
+    for (int i = 0; i < 5; ++i) pvd[1 + i] = static_cast<unsigned char>(cd001[i]);
+    pvd[6] = 1;
+    const char sys[] = "QINGXIA";
+    for (int i = 0; i < 7; ++i) pvd[8 + i] = static_cast<unsigned char>(sys[i]);
+    for (int i = 7; i < 32; ++i) pvd[8 + i] = ' ';
+    for (int i = 0; i < 32; ++i) pvd[40 + i] = ' ';
+    const auto volSize = both32(22);
+    std::copy(volSize.begin(), volSize.end(), pvd.begin() + 80);
+    const auto one16 = both16(1);
+    std::copy(one16.begin(), one16.end(), pvd.begin() + 120);
+    std::copy(one16.begin(), one16.end(), pvd.begin() + 124);
+    const auto block = both16(static_cast<std::uint16_t>(SECTOR));
+    std::copy(block.begin(), block.end(), pvd.begin() + 128);
+    const auto pts = both32(static_cast<std::uint32_t>(ptL.size()));
+    std::copy(pts.begin(), pts.end(), pvd.begin() + 132);
+    pvd[140] = static_cast<unsigned char>(pathTableL);
+    pvd[141] = static_cast<unsigned char>(pathTableL >> 8);
+    pvd[142] = static_cast<unsigned char>(pathTableL >> 16);
+    pvd[143] = static_cast<unsigned char>(pathTableL >> 24);
+    pvd[148] = static_cast<unsigned char>(pathTableM >> 24);
+    pvd[149] = static_cast<unsigned char>(pathTableM >> 16);
+    pvd[150] = static_cast<unsigned char>(pathTableM >> 8);
+    pvd[151] = static_cast<unsigned char>(pathTableM);
+    const auto rootRec = dirRecord(rootExtent, static_cast<std::uint32_t>(SECTOR), 0x02, {0x00});
+    std::copy(rootRec.begin(), rootRec.end(), pvd.begin() + 156);
+    for (int i = 190; i < 318; ++i) pvd[i] = ' ';
+    for (int base : {318, 446, 574}) {
+        for (int i = 0; i < 7; ++i) pvd[base + i] = static_cast<unsigned char>(sys[i]);
+        for (int i = 7; i < 128; ++i) pvd[base + i] = ' ';
+    }
+    for (int i = 702; i < 813; ++i) pvd[i] = ' ';
+    pvd[881] = 1;
+
+    std::vector<unsigned char> term(SECTOR, 0);
+    term[0] = 255;
+    for (int i = 0; i < 5; ++i) term[1 + i] = static_cast<unsigned char>(cd001[i]);
+    term[6] = 1;
+
+    std::vector<unsigned char> img(22 * SECTOR, 0);
+    std::copy(pvd.begin(), pvd.end(), img.begin() + 16 * SECTOR);
+    std::copy(term.begin(), term.end(), img.begin() + 17 * SECTOR);
+    std::copy(ptL.begin(), ptL.end(), img.begin() + 18 * SECTOR);
+    std::copy(ptM.begin(), ptM.end(), img.begin() + 19 * SECTOR);
+    std::copy(rootDir.begin(), rootDir.end(), img.begin() + 20 * SECTOR);
+    std::copy(content.begin(), content.end(), img.begin() + 21 * SECTOR);
+
+    fs::create_directories(path.parent_path());
+    std::ofstream out(path, std::ios::binary);
+    out.write(reinterpret_cast<const char*>(img.data()), static_cast<std::streamsize>(img.size()));
+}
+
+void testIsoRead(zipdesk::ArchiveService& service, const fs::path& root) {
+    const fs::path isoPath = root / L"sample.iso";
+    writeMinimalIso(isoPath, "hello-iso\n");
+    check(zipdesk::formatFromPath(isoPath.wstring()) == zipdesk::ArchiveFormat::Iso, "sample.iso format");
+    const zipdesk::OperationHooks noHooks;
+    const zipdesk::ArchiveInfo info = service.read(isoPath.wstring(), L"", noHooks);
+    check(info.format == zipdesk::ArchiveFormat::Iso && containsPath(info, L"HELLO.TXT", 10),
+          "iso lists HELLO.TXT");
+    const fs::path outDir = root / L"out-iso";
+    zipdesk::ExtractRequest extract;
+    extract.archivePath = isoPath.wstring();
+    extract.outputDir = outDir.wstring();
+    extract.overwrite = zipdesk::OverwritePolicy::Overwrite;
+    service.extract(extract, noHooks);
+    check(readFile(findChild(outDir, L"HELLO.TXT")) == "hello-iso\n", "iso extracts HELLO.TXT");
+
+    bool rejectedEdit = false;
+    try {
+        service.append({isoPath.wstring(), {(root / L"dummy.txt").wstring()}, L"",
+                        zipdesk::CompressionLevel::Normal},
+                       noHooks);
+    } catch (const zipdesk::ArchiveError&) {
+        rejectedEdit = true;
+    }
+    check(rejectedEdit, "iso remains non-editable");
+}
+
 int main() {
     testClassicContextMenuRegistry();
     testSmartExtractDestination();
@@ -992,6 +1166,7 @@ int main() {
         testReadItemSizeLimit(service, root / L"read-limit");
         testTarGzipRead(service, root / L"tar-gz");
         testTarXzRead(service, root / L"tar-xz");
+        testIsoRead(service, root / L"iso");
         testRoundTrip(service, zipdesk::ArchiveFormat::Zip, root / "zip");
         testRoundTrip(service, zipdesk::ArchiveFormat::SevenZip, root / "7z");
         testOverwriteAndCancel(service, root / "zip");

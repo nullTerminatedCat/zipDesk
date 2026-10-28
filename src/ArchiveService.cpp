@@ -123,6 +123,9 @@ const bit7z::BitInFormat& toInFormat(ArchiveFormat format) {
     if (format == ArchiveFormat::Xz) {
         return bit7z::BitFormat::Xz;
     }
+    if (format == ArchiveFormat::Iso) {
+        return bit7z::BitFormat::Iso;
+    }
     if (format == ArchiveFormat::TarGz) {
         // Compound gzip+tar is materialized to a temp .tar before bit7z sees it.
         throw ArchiveError(ErrorKind::Other, L"内部错误：TAR.GZ 需要先展开内层 TAR。");
@@ -527,12 +530,13 @@ bool pathInside(const std::wstring& parent, const std::wstring& child) {
 
 
 std::wstring readableFormatsHint() {
-    return L"目前可读取 ZIP、7z、RAR、TAR、GZIP、TAR.GZ、XZ、TAR.XZ；可创建 ZIP、7z。";
+    return L"目前可读取 ZIP、7z、RAR、TAR、GZIP、TAR.GZ、XZ、TAR.XZ、ISO；可创建 ZIP、7z。";
 }
 
 bool isReadOnlyFormat(ArchiveFormat format) {
     return format == ArchiveFormat::Rar || format == ArchiveFormat::Tar || format == ArchiveFormat::GZip ||
-           format == ArchiveFormat::TarGz || format == ArchiveFormat::Xz || format == ArchiveFormat::TarXz;
+           format == ArchiveFormat::TarGz || format == ArchiveFormat::Xz || format == ArchiveFormat::TarXz ||
+           format == ArchiveFormat::Iso;
 }
 
 ContentFormat sniffContentFormat(const std::wstring& path) {
@@ -652,6 +656,9 @@ std::optional<ArchiveFormat> formatFromExtension(const std::wstring& path) {
     if (extension == L".xz") {
         return ArchiveFormat::Xz;
     }
+    if (extension == L".iso") {
+        return ArchiveFormat::Iso;
+    }
     return std::nullopt;
 }
 
@@ -669,18 +676,20 @@ std::optional<ArchiveFormat> readableFromContent(ContentFormat sniffed) {
         return ArchiveFormat::GZip;
     case ContentFormat::Xz:
         return ArchiveFormat::Xz;
+    case ContentFormat::Iso:
+        return ArchiveFormat::Iso;
     default:
         return std::nullopt;
     }
 }
 
 bool isRecognizedUnsupported(ContentFormat sniffed) {
-    return sniffed == ContentFormat::Iso;
+    (void)sniffed;
+    return false;
 }
 
 ContentFormat unsupportedFromExtension(const std::wstring& path) {
     const std::wstring extension = lowerExtension(path);
-    if (extension == L".iso") return ContentFormat::Iso;
     if (extension == L".zipx") return ContentFormat::Zip;  // treated specially by caller
     return ContentFormat::Unknown;
 }
@@ -703,6 +712,8 @@ std::wstring archiveFormatName(ArchiveFormat format) {
         return L"XZ";
     case ArchiveFormat::TarXz:
         return L"TAR.XZ";
+    case ArchiveFormat::Iso:
+        return L"ISO";
     }
     return L"未知";
 }
@@ -759,7 +770,7 @@ ArchiveFormat formatFromPath(const std::wstring& path) {
     }
     if (const ContentFormat pretended = unsupportedFromExtension(path); pretended != ContentFormat::Unknown &&
         !readableFromContent(sniffed)) {
-        // Extension claims ISO (or ZIPX handled above) and content did not override.
+        // Extension claims an unsupported format (ZIPX handled above) and content did not override.
         throwUnsupported(pretended, byExt);
     }
 
