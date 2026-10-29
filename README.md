@@ -2,7 +2,7 @@
 
 一个面向 Windows 的轻量压缩文件管理器。打开压缩包、查看内容、按需解压，也可以通过拖放或资源管理器右键菜单创建压缩包。
 
-> 当前为 **0.2.14 版本**。可从 [GitHub Releases](https://github.com/nullTerminatedCat/zipDesk/releases/tag/v0.2.14) 下载 Windows x64 / x86 安装包或免安装 ZIP；两种架构使用相同版本源码。功能和界面仍在完善。
+> 当前为 **0.2.14 版本**。可从 [GitHub Releases](https://github.com/nullTerminatedCat/zipDesk/releases/tag/v0.2.15) 下载 Windows x64 / x86 安装包或免安装 ZIP；两种架构使用相同版本源码。功能和界面仍在完善。
 
 ![青匣主页](docs/screenshots/home.png)
 
@@ -32,14 +32,15 @@
 | XZ | ✓ | — | — |
 | TAR.XZ / TXZ | ✓ | — | — |
 | ISO | ✓ | — | — |
+| ZIPX | ✓ | — | — |
 
-打开时优先按文件头识别格式；扩展名用于补充（如 `.tar.gz`）。分卷压缩包可以创建，但直接打开 `.001` 分卷尚未支持；ZIPX 等更多格式在[开发计划](PRODUCT_PLAN.md)中。
+打开时优先按文件头识别格式；扩展名用于补充（如 `.tar.gz`）。分卷压缩包可以创建，但直接打开 `.001` 分卷尚未支持；更多格式在[开发计划](PRODUCT_PLAN.md)中。
 
 ## 获取与使用
 
-在 [Release 页面](https://github.com/nullTerminatedCat/zipDesk/releases/tag/v0.2.14) 下载 `setup.exe` 安装包，或完整解压 `portable.zip` 后运行 `ZipDesk.exe`。两种包均包含 Qt、7-Zip 和 Visual C++ 运行库，另附 SHA-256 校验文件。程序未做代码签名。
+在 [Release 页面](https://github.com/nullTerminatedCat/zipDesk/releases/tag/v0.2.15) 下载 `setup.exe` 安装包，或完整解压 `portable.zip` 后运行 `ZipDesk.exe`。两种包均包含 Qt、7-Zip 和 Visual C++ 运行库，另附 SHA-256 校验文件。程序未做代码签名。
 
-启动后，可以拖入 ZIP、7z、RAR、TAR、GZ、XZ、ISO（含 `.tar.gz` / `.tgz` / `.tar.xz` / `.txz`）查看内容，或拖入普通文件和文件夹创建压缩包。打开压缩包后，工具栏提供解压、添加和完整性测试等操作。也可以按下文从源码构建。
+启动后，可以拖入 ZIP、7z、RAR、TAR、GZ、XZ、ISO、ZIPX（含 `.tar.gz` / `.tgz` / `.tar.xz` / `.txz`）查看内容，或拖入普通文件和文件夹创建压缩包。打开压缩包后，工具栏提供解压、添加和完整性测试等操作。也可以按下文从源码构建。
 
 程序设置中可以启用资源管理器文件关联与右键菜单；安装器也提供此选项。该设置写入当前用户的 Windows 配置，不需要系统级安装。
 
@@ -132,7 +133,7 @@ build\ZipDesk.exe a result.7z file1.txt folder
 
 ## 已知限制
 
-- 面向 Windows，主要发布配置为 x64，x86 使用自行编译的 Qt；RAR / TAR / GZIP / TAR.GZ / XZ / TAR.XZ / ISO 只支持打开和解压。
+- 面向 Windows，主要发布配置为 x64，x86 使用自行编译的 Qt；RAR / TAR / GZIP / TAR.GZ / XZ / TAR.XZ / ISO / ZIPX 只支持打开和解压。
 - “抢救可读取文件”依赖能够先读取压缩包目录，不能修复所有损坏情况。
 - ZIP 密码目前只接受 ASCII 字符；英文界面尚有未翻译文案。
 - 解压失败或取消时，目标目录可能保留已写入的部分文件；已经覆盖的文件不会自动恢复。

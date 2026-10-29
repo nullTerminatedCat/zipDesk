@@ -126,6 +126,10 @@ const bit7z::BitInFormat& toInFormat(ArchiveFormat format) {
     if (format == ArchiveFormat::Iso) {
         return bit7z::BitFormat::Iso;
     }
+    if (format == ArchiveFormat::Zipx) {
+        // ZIPX is ZIP with extended methods; 7-Zip opens it via the ZIP handler.
+        return bit7z::BitFormat::Zip;
+    }
     if (format == ArchiveFormat::TarGz) {
         // Compound gzip+tar is materialized to a temp .tar before bit7z sees it.
         throw ArchiveError(ErrorKind::Other, L"内部错误：TAR.GZ 需要先展开内层 TAR。");
@@ -530,13 +534,13 @@ bool pathInside(const std::wstring& parent, const std::wstring& child) {
 
 
 std::wstring readableFormatsHint() {
-    return L"目前可读取 ZIP、7z、RAR、TAR、GZIP、TAR.GZ、XZ、TAR.XZ、ISO；可创建 ZIP、7z。";
+    return L"目前可读取 ZIP、7z、RAR、TAR、GZIP、TAR.GZ、XZ、TAR.XZ、ISO、ZIPX；可创建 ZIP、7z。";
 }
 
 bool isReadOnlyFormat(ArchiveFormat format) {
     return format == ArchiveFormat::Rar || format == ArchiveFormat::Tar || format == ArchiveFormat::GZip ||
            format == ArchiveFormat::TarGz || format == ArchiveFormat::Xz || format == ArchiveFormat::TarXz ||
-           format == ArchiveFormat::Iso;
+           format == ArchiveFormat::Iso || format == ArchiveFormat::Zipx;
 }
 
 ContentFormat sniffContentFormat(const std::wstring& path) {
@@ -659,6 +663,9 @@ std::optional<ArchiveFormat> formatFromExtension(const std::wstring& path) {
     if (extension == L".iso") {
         return ArchiveFormat::Iso;
     }
+    if (extension == L".zipx") {
+        return ArchiveFormat::Zipx;
+    }
     return std::nullopt;
 }
 
@@ -689,8 +696,8 @@ bool isRecognizedUnsupported(ContentFormat sniffed) {
 }
 
 ContentFormat unsupportedFromExtension(const std::wstring& path) {
-    const std::wstring extension = lowerExtension(path);
-    if (extension == L".zipx") return ContentFormat::Zip;  // treated specially by caller
+    (void)path;
+    // All previously recognized-but-unsupported extensions (ZIPX) are now readable.
     return ContentFormat::Unknown;
 }
 
@@ -714,6 +721,8 @@ std::wstring archiveFormatName(ArchiveFormat format) {
         return L"TAR.XZ";
     case ArchiveFormat::Iso:
         return L"ISO";
+    case ArchiveFormat::Zipx:
+        return L"ZIPX";
     }
     return L"未知";
 }
@@ -740,10 +749,6 @@ bool isArchivePath(const std::wstring& path) {
     if (unsupportedFromExtension(path) != ContentFormat::Unknown) {
         return true;
     }
-    const std::wstring extension = lowerExtension(path);
-    if (extension == L".zipx") {
-        return true;
-    }
     std::error_code existsError;
     if (!fs::is_regular_file(path, existsError)) {
         return false;
@@ -754,7 +759,6 @@ bool isArchivePath(const std::wstring& path) {
 
 ArchiveFormat formatFromPath(const std::wstring& path) {
     const auto byExt = formatFromExtension(path);
-    const std::wstring extension = lowerExtension(path);
     ContentFormat sniffed = ContentFormat::Unknown;
     std::error_code existsError;
     if (fs::is_regular_file(path, existsError)) {
@@ -764,14 +768,16 @@ ArchiveFormat formatFromPath(const std::wstring& path) {
     if (isRecognizedUnsupported(sniffed)) {
         throwUnsupported(sniffed, byExt);
     }
-    if (extension == L".zipx") {
-        throw ArchiveError(ErrorKind::Other,
-                           L"识别到扩展名为 ZIPX，当前版本尚不支持打开 ZIPX。" + readableFormatsHint());
-    }
     if (const ContentFormat pretended = unsupportedFromExtension(path); pretended != ContentFormat::Unknown &&
         !readableFromContent(sniffed)) {
-        // Extension claims an unsupported format (ZIPX handled above) and content did not override.
+        // Extension claims an unsupported format and content did not override.
         throwUnsupported(pretended, byExt);
+    }
+
+    // Prefer ZIPX when the extension says so and content is ZIP or unknown (7-Zip reads ZIP methods).
+    if (byExt && *byExt == ArchiveFormat::Zipx &&
+        (sniffed == ContentFormat::Zip || sniffed == ContentFormat::Unknown)) {
+        return ArchiveFormat::Zipx;
     }
 
     // Prefer compound TAR.GZ / TAR.XZ when the extension says so and content matches (or unknown).

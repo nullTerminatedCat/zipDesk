@@ -167,15 +167,12 @@ void testContentSniff(const fs::path& root) {
           "missing iso path keeps extension");
 
     writeBytes(root / L"named.zipx", {'P', 'K', 0x03, 0x04});
-    bool rejectedZipx = false;
-    std::wstring zipxMessage;
-    try {
-        (void)zipdesk::formatFromPath((root / L"named.zipx").wstring());
-    } catch (const zipdesk::ArchiveError& error) {
-        rejectedZipx = true;
-        zipxMessage = error.message();
-    }
-    check(rejectedZipx && zipxMessage.find(L"ZIPX") != std::wstring::npos, "zipx remains unsupported");
+    check(zipdesk::formatFromPath((root / L"named.zipx").wstring()) == zipdesk::ArchiveFormat::Zipx,
+          "zipx with ZIP header is Zipx");
+    check(zipdesk::isReadOnlyFormat(zipdesk::ArchiveFormat::Zipx), "zipx is read-only");
+    check(zipdesk::formatFromPath(L"C:\\missing.zipx") == zipdesk::ArchiveFormat::Zipx,
+          "missing zipx path keeps extension");
+    check(zipdesk::isArchivePath((root / L"named.zipx").wstring()), "zipx is archive path");
 }
 
 void testDropDecision() {
@@ -1148,6 +1145,59 @@ void testIsoRead(zipdesk::ArchiveService& service, const fs::path& root) {
     check(rejectedEdit, "iso remains non-editable");
 }
 
+
+void testZipxRead(zipdesk::ArchiveService& service, const fs::path& root) {
+    fs::create_directories(root);
+    writeFile(root / L"hello.txt", "hello-zipx\n");
+    zipdesk::CompressRequest compress;
+    compress.inputs = {(root / L"hello.txt").wstring()};
+    compress.outputPath = (root / L"sample.zip").wstring();
+    compress.format = zipdesk::ArchiveFormat::Zip;
+    compress.level = zipdesk::CompressionLevel::Normal;
+    const zipdesk::OperationHooks noHooks;
+    service.compress(compress, noHooks);
+    const fs::path zipxPath = root / L"sample.zipx";
+    fs::rename(root / L"sample.zip", zipxPath);
+
+    check(zipdesk::formatFromPath(zipxPath.wstring()) == zipdesk::ArchiveFormat::Zipx, "sample.zipx format");
+    check(zipdesk::isReadOnlyFormat(zipdesk::ArchiveFormat::Zipx), "zipx format is read-only");
+    const zipdesk::ArchiveInfo info = service.read(zipxPath.wstring(), L"", noHooks);
+    check(info.format == zipdesk::ArchiveFormat::Zipx && containsPath(info, L"hello.txt", 11),
+          "zipx lists hello.txt");
+
+    const fs::path outDir = root / L"out-zipx";
+    zipdesk::ExtractRequest extract;
+    extract.archivePath = zipxPath.wstring();
+    extract.outputDir = outDir.wstring();
+    extract.overwrite = zipdesk::OverwritePolicy::Overwrite;
+    service.extract(extract, noHooks);
+    check(readFile(findChild(outDir, L"hello.txt")) == "hello-zipx\n", "zipx extracts hello.txt");
+
+    service.test(zipxPath.wstring(), L"", noHooks);
+
+    bool rejectedEdit = false;
+    try {
+        service.append({zipxPath.wstring(), {(root / L"hello.txt").wstring()}, L"",
+                        zipdesk::CompressionLevel::Normal},
+                       noHooks);
+    } catch (const zipdesk::ArchiveError&) {
+        rejectedEdit = true;
+    }
+    check(rejectedEdit, "zipx remains non-editable");
+
+    bool rejectedCreate = false;
+    try {
+        zipdesk::CompressRequest bad;
+        bad.inputs = {(root / L"hello.txt").wstring()};
+        bad.outputPath = (root / L"created.zipx").wstring();
+        bad.format = zipdesk::ArchiveFormat::Zipx;
+        service.compress(bad, noHooks);
+    } catch (const zipdesk::ArchiveError&) {
+        rejectedCreate = true;
+    }
+    check(rejectedCreate, "zipx cannot be created");
+}
+
 int main() {
     testClassicContextMenuRegistry();
     testSmartExtractDestination();
@@ -1167,6 +1217,7 @@ int main() {
         testTarGzipRead(service, root / L"tar-gz");
         testTarXzRead(service, root / L"tar-xz");
         testIsoRead(service, root / L"iso");
+        testZipxRead(service, root / L"zipx");
         testRoundTrip(service, zipdesk::ArchiveFormat::Zip, root / "zip");
         testRoundTrip(service, zipdesk::ArchiveFormat::SevenZip, root / "7z");
         testOverwriteAndCancel(service, root / "zip");

@@ -12,10 +12,10 @@
 
 namespace zipdesk {
 
-enum class ArchiveFormat : int { Zip, SevenZip, Rar, Tar, GZip, TarGz, Xz, TarXz, Iso };
+enum class ArchiveFormat : int { Zip, SevenZip, Rar, Tar, GZip, TarGz, Xz, TarXz, Iso, Zipx };
 
 // Result of reading the file header (and a few common extensions). Readable formats
-// include Zip/SevenZip/Rar/Tar/GZip/TarGz/Xz/TarXz/Iso; Zipx remains recognized-but-unsupported.
+// include Zip/SevenZip/Rar/Tar/GZip/TarGz/Xz/TarXz/Iso/Zipx.
 enum class ContentFormat : int { Unknown, Zip, SevenZip, Rar, Tar, GZip, Xz, Iso };
 
 enum class CompressionLevel : int { Store, Fast, Normal, Maximum };
@@ -187,7 +187,7 @@ bool isArchivePath(const std::wstring& path);
 ContentFormat sniffContentFormat(const std::wstring& path);
 std::wstring contentFormatName(ContentFormat format);
 ArchiveFormat formatFromPath(const std::wstring& path);
-// RAR / TAR / GZIP / TAR.GZ / XZ / TAR.XZ / ISO are open-and-extract only.
+// RAR / TAR / GZIP / TAR.GZ / XZ / TAR.XZ / ISO / ZIPX are open-and-extract only.
 bool isReadOnlyFormat(ArchiveFormat format);
 std::wstring readableFormatsHint();
 
