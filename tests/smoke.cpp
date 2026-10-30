@@ -173,6 +173,16 @@ void testContentSniff(const fs::path& root) {
     check(zipdesk::formatFromPath(L"C:\\missing.zipx") == zipdesk::ArchiveFormat::Zipx,
           "missing zipx path keeps extension");
     check(zipdesk::isArchivePath((root / L"named.zipx").wstring()), "zipx is archive path");
+
+    check(zipdesk::formatFromPath(L"C:\\missing.zip.001") == zipdesk::ArchiveFormat::SplitZip,
+          "missing zip.001 keeps split-zip format");
+    check(zipdesk::formatFromPath(L"C:\\missing.7z.001") == zipdesk::ArchiveFormat::SplitSevenZip,
+          "missing 7z.001 keeps split-7z format");
+    check(zipdesk::isReadOnlyFormat(zipdesk::ArchiveFormat::SplitZip), "split zip is read-only");
+    check(zipdesk::isReadOnlyFormat(zipdesk::ArchiveFormat::SplitSevenZip), "split 7z is read-only");
+    check(zipdesk::isNumberedVolumePath(L"C:\\a.zip.001"), "zip.001 is numbered volume");
+    check(zipdesk::isNumberedVolumePath(L"C:\\a.zip.002"), "zip.002 is numbered volume");
+    check(!zipdesk::isNumberedVolumePath(L"C:\\a.zip"), "plain zip is not numbered volume");
 }
 
 void testDropDecision() {
@@ -1146,6 +1156,64 @@ void testIsoRead(zipdesk::ArchiveService& service, const fs::path& root) {
 }
 
 
+
+void testSplitVolumeRead(zipdesk::ArchiveService& service, const fs::path& root) {
+    fs::create_directories(root);
+    {
+        std::ofstream output(root / L"payload.bin", std::ios::binary);
+        for (int i = 0; i < 64 * 1024; ++i) output.put(static_cast<char>(i & 0xff));
+    }
+    const fs::path volumeOutput = root / L"pack.zip";
+    zipdesk::CompressRequest compress;
+    compress.inputs = {(root / L"payload.bin").wstring()};
+    compress.outputPath = volumeOutput.wstring();
+    compress.format = zipdesk::ArchiveFormat::Zip;
+    compress.level = zipdesk::CompressionLevel::Store;
+    compress.volumeSize = 16 * 1024;
+    service.compress(compress, {});
+    const fs::path first = fs::path(volumeOutput.wstring() + L".001");
+    const fs::path second = fs::path(volumeOutput.wstring() + L".002");
+    check(fs::exists(first), "multi-volume created .001");
+    check(fs::exists(second), "multi-volume created .002");
+    check(zipdesk::formatFromPath(first.wstring()) == zipdesk::ArchiveFormat::SplitZip,
+          "first volume is SplitZip");
+    check(zipdesk::isReadOnlyFormat(zipdesk::ArchiveFormat::SplitZip), "SplitZip read-only");
+    check(zipdesk::resolveVolumeOpenPath(second.wstring()) == first.wstring(),
+          ".002 resolves to .001");
+
+    zipdesk::OperationHooks noHooks;
+    const zipdesk::ArchiveInfo info = service.read(first.wstring(), L"", noHooks);
+    check(info.format == zipdesk::ArchiveFormat::SplitZip && containsPath(info, L"payload.bin", 64ull * 1024),
+          "split volume lists payload.bin");
+    // Opening a later volume should redirect to the first.
+    const zipdesk::ArchiveInfo viaSecond = service.read(second.wstring(), L"", noHooks);
+    check(viaSecond.format == zipdesk::ArchiveFormat::SplitZip &&
+              viaSecond.path == first.wstring() &&
+              containsPath(viaSecond, L"payload.bin", 64ull * 1024),
+          "opening .002 reads via .001");
+
+    const fs::path outDir = root / L"out-split";
+    zipdesk::ExtractRequest extract;
+    extract.archivePath = first.wstring();
+    extract.outputDir = outDir.wstring();
+    extract.overwrite = zipdesk::OverwritePolicy::Overwrite;
+    service.extract(extract, noHooks);
+    {
+        const auto extracted = findChild(outDir, L"payload.bin");
+        check(fs::file_size(extracted) == 64ull * 1024, "split volume extracts payload size");
+    }
+    service.test(first.wstring(), L"", noHooks);
+
+    bool rejectedEdit = false;
+    try {
+        service.append({first.wstring(), {(root / L"payload.bin").wstring()}, L"",
+                        zipdesk::CompressionLevel::Store}, noHooks);
+    } catch (const zipdesk::ArchiveError&) {
+        rejectedEdit = true;
+    }
+    check(rejectedEdit, "split volume remains non-editable");
+}
+
 void testZipxRead(zipdesk::ArchiveService& service, const fs::path& root) {
     fs::create_directories(root);
     writeFile(root / L"hello.txt", "hello-zipx\n");
@@ -1218,6 +1286,7 @@ int main() {
         testTarXzRead(service, root / L"tar-xz");
         testIsoRead(service, root / L"iso");
         testZipxRead(service, root / L"zipx");
+        testSplitVolumeRead(service, root / L"split-vol");
         testRoundTrip(service, zipdesk::ArchiveFormat::Zip, root / "zip");
         testRoundTrip(service, zipdesk::ArchiveFormat::SevenZip, root / "7z");
         testOverwriteAndCancel(service, root / "zip");

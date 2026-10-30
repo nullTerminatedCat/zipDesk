@@ -12,10 +12,10 @@
 
 namespace zipdesk {
 
-enum class ArchiveFormat : int { Zip, SevenZip, Rar, Tar, GZip, TarGz, Xz, TarXz, Iso, Zipx };
+enum class ArchiveFormat : int { Zip, SevenZip, Rar, Tar, GZip, TarGz, Xz, TarXz, Iso, Zipx, SplitZip, SplitSevenZip };
 
 // Result of reading the file header (and a few common extensions). Readable formats
-// include Zip/SevenZip/Rar/Tar/GZip/TarGz/Xz/TarXz/Iso/Zipx.
+// include Zip/SevenZip/Rar/Tar/GZip/TarGz/Xz/TarXz/Iso/Zipx/SplitZip/SplitSevenZip.
 enum class ContentFormat : int { Unknown, Zip, SevenZip, Rar, Tar, GZip, Xz, Iso };
 
 enum class CompressionLevel : int { Store, Fast, Normal, Maximum };
@@ -187,8 +187,12 @@ bool isArchivePath(const std::wstring& path);
 ContentFormat sniffContentFormat(const std::wstring& path);
 std::wstring contentFormatName(ContentFormat format);
 ArchiveFormat formatFromPath(const std::wstring& path);
-// RAR / TAR / GZIP / TAR.GZ / XZ / TAR.XZ / ISO / ZIPX are open-and-extract only.
+// RAR / TAR / GZIP / TAR.GZ / XZ / TAR.XZ / ISO / ZIPX / split volumes (.001) are open-and-extract only.
 bool isReadOnlyFormat(ArchiveFormat format);
+// True for paths ending in a numeric volume suffix such as .001 / .002.
+bool isNumberedVolumePath(const std::wstring& path);
+// Map .002/.003… to sibling .001; leave .001 and non-volumes unchanged.
+std::wstring resolveVolumeOpenPath(const std::wstring& path);
 std::wstring readableFormatsHint();
 
 std::vector<std::uint32_t> expandSelection(const std::vector<ArchiveEntry>& entries,

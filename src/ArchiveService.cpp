@@ -126,9 +126,12 @@ const bit7z::BitInFormat& toInFormat(ArchiveFormat format) {
     if (format == ArchiveFormat::Iso) {
         return bit7z::BitFormat::Iso;
     }
-    if (format == ArchiveFormat::Zipx) {
-        // ZIPX is ZIP with extended methods; 7-Zip opens it via the ZIP handler.
+    if (format == ArchiveFormat::Zipx || format == ArchiveFormat::SplitZip) {
+        // ZIPX / multi-volume ZIP: 7-Zip opens via the ZIP handler (.001 uses multi-volume stream).
         return bit7z::BitFormat::Zip;
+    }
+    if (format == ArchiveFormat::SplitSevenZip) {
+        return bit7z::BitFormat::SevenZip;
     }
     if (format == ArchiveFormat::TarGz) {
         // Compound gzip+tar is materialized to a temp .tar before bit7z sees it.
@@ -534,13 +537,14 @@ bool pathInside(const std::wstring& parent, const std::wstring& child) {
 
 
 std::wstring readableFormatsHint() {
-    return L"目前可读取 ZIP、7z、RAR、TAR、GZIP、TAR.GZ、XZ、TAR.XZ、ISO、ZIPX；可创建 ZIP、7z。";
+    return L"目前可读取 ZIP、7z、RAR、TAR、GZIP、TAR.GZ、XZ、TAR.XZ、ISO、ZIPX、分卷（.001）；可创建 ZIP、7z。";
 }
 
 bool isReadOnlyFormat(ArchiveFormat format) {
     return format == ArchiveFormat::Rar || format == ArchiveFormat::Tar || format == ArchiveFormat::GZip ||
            format == ArchiveFormat::TarGz || format == ArchiveFormat::Xz || format == ArchiveFormat::TarXz ||
-           format == ArchiveFormat::Iso || format == ArchiveFormat::Zipx;
+           format == ArchiveFormat::Iso || format == ArchiveFormat::Zipx ||
+           format == ArchiveFormat::SplitZip || format == ArchiveFormat::SplitSevenZip;
 }
 
 ContentFormat sniffContentFormat(const std::wstring& path) {
@@ -634,7 +638,39 @@ std::wstring lowerExtension(const std::wstring& path) {
     return extension;
 }
 
+bool isNumericVolumeExtension(const std::wstring& extension) {
+    // 7-Zip multi-volume suffixes are .001, .002, … (at least three digits).
+    if (extension.size() < 4 || extension[0] != L'.') {
+        return false;
+    }
+    return std::all_of(extension.begin() + 1, extension.end(),
+                       [](wchar_t ch) { return ch >= L'0' && ch <= L'9'; });
+}
+
+std::optional<ArchiveFormat> formatFromStemVolume(const std::wstring& path) {
+    // archive.zip.001 → look at "archive.zip"; only ZIP / 7z volumes are created this way.
+    std::wstring volumeExt = fs::path(path).extension().wstring();
+    for (wchar_t& ch : volumeExt) {
+        ch = static_cast<wchar_t>(towlower(ch));
+    }
+    if (!isNumericVolumeExtension(volumeExt)) {
+        return std::nullopt;
+    }
+    const fs::path stemPath = fs::path(path).parent_path() / fs::path(path).stem();
+    const std::wstring stemExt = lowerExtension(stemPath.wstring());
+    if (stemExt == L".zip") {
+        return ArchiveFormat::SplitZip;
+    }
+    if (stemExt == L".7z") {
+        return ArchiveFormat::SplitSevenZip;
+    }
+    return std::nullopt;
+}
+
 std::optional<ArchiveFormat> formatFromExtension(const std::wstring& path) {
+    if (const auto split = formatFromStemVolume(path)) {
+        return split;
+    }
     const std::wstring extension = lowerExtension(path);
     if (extension == L".zip") {
         return ArchiveFormat::Zip;
@@ -723,6 +759,10 @@ std::wstring archiveFormatName(ArchiveFormat format) {
         return L"ISO";
     case ArchiveFormat::Zipx:
         return L"ZIPX";
+    case ArchiveFormat::SplitZip:
+        return L"ZIP 分卷";
+    case ArchiveFormat::SplitSevenZip:
+        return L"7z 分卷";
     }
     return L"未知";
 }
@@ -738,12 +778,50 @@ std::wstring archiveFormatName(ArchiveFormat format) {
 
 }  // namespace
 
+bool isNumberedVolumePath(const std::wstring& path) {
+    std::wstring extension = fs::path(path).extension().wstring();
+    for (wchar_t& ch : extension) {
+        ch = static_cast<wchar_t>(towlower(ch));
+    }
+    if (extension.size() < 4 || extension[0] != L'.') {
+        return false;
+    }
+    return std::all_of(extension.begin() + 1, extension.end(),
+                       [](wchar_t ch) { return ch >= L'0' && ch <= L'9'; });
+}
+
+std::wstring resolveVolumeOpenPath(const std::wstring& path) {
+    if (!isNumberedVolumePath(path)) {
+        return path;
+    }
+    fs::path file(path);
+    std::wstring extension = file.extension().wstring();
+    for (wchar_t& ch : extension) {
+        ch = static_cast<wchar_t>(towlower(ch));
+    }
+    if (extension == L".001") {
+        return path;
+    }
+    const fs::path first = file.parent_path() / (file.stem().wstring() + L".001");
+    std::error_code error;
+    if (!fs::is_regular_file(first, error)) {
+        throw ArchiveError(ErrorKind::Other,
+                           L"请打开分卷的第一卷（.001）。找不到：" + first.wstring());
+    }
+    return first.wstring();
+}
+
+
 bool isArchivePath(const std::wstring& path) {
     std::error_code error;
     if (path.empty() || fs::is_directory(path, error)) {
         return false;
     }
     if (formatFromExtension(path)) {
+        return true;
+    }
+    if (isNumberedVolumePath(path)) {
+        // Bare .001 without .zip/.7z in the stem may still be a multi-volume set.
         return true;
     }
     if (unsupportedFromExtension(path) != ContentFormat::Unknown) {
@@ -761,8 +839,17 @@ ArchiveFormat formatFromPath(const std::wstring& path) {
     const auto byExt = formatFromExtension(path);
     ContentFormat sniffed = ContentFormat::Unknown;
     std::error_code existsError;
-    if (fs::is_regular_file(path, existsError)) {
-        sniffed = sniffContentFormat(path);
+    // Sniff the first volume when the user pointed at .002 / .003 …
+    std::wstring sniffPath = path;
+    if (isNumberedVolumePath(path)) {
+        try {
+            sniffPath = resolveVolumeOpenPath(path);
+        } catch (const ArchiveError&) {
+            sniffPath = path;
+        }
+    }
+    if (fs::is_regular_file(sniffPath, existsError)) {
+        sniffed = sniffContentFormat(sniffPath);
     }
 
     if (isRecognizedUnsupported(sniffed)) {
@@ -772,6 +859,28 @@ ArchiveFormat formatFromPath(const std::wstring& path) {
         !readableFromContent(sniffed)) {
         // Extension claims an unsupported format and content did not override.
         throwUnsupported(pretended, byExt);
+    }
+
+    // Numbered volumes (.001): ZIP / 7z content (or stem) opens as read-only split formats.
+    if (isNumberedVolumePath(path)) {
+        if (byExt && (*byExt == ArchiveFormat::SplitZip || *byExt == ArchiveFormat::SplitSevenZip) &&
+            (sniffed == ContentFormat::Unknown ||
+             (sniffed == ContentFormat::Zip && *byExt == ArchiveFormat::SplitZip) ||
+             (sniffed == ContentFormat::SevenZip && *byExt == ArchiveFormat::SplitSevenZip))) {
+            return *byExt;
+        }
+        if (sniffed == ContentFormat::Zip) {
+            return ArchiveFormat::SplitZip;
+        }
+        if (sniffed == ContentFormat::SevenZip) {
+            return ArchiveFormat::SplitSevenZip;
+        }
+        if (byExt && (*byExt == ArchiveFormat::SplitZip || *byExt == ArchiveFormat::SplitSevenZip)) {
+            return *byExt;
+        }
+        throw ArchiveError(ErrorKind::Other,
+                           L"无法识别该分卷压缩包。请打开第一卷（.001），并确认同目录有完整分卷。" +
+                               readableFormatsHint());
     }
 
     // Prefer ZIPX when the extension says so and content is ZIP or unknown (7-Zip reads ZIP methods).
@@ -907,11 +1016,15 @@ ArchiveInfo ArchiveService::read(const std::wstring& archivePath,
     if (!fs::exists(archivePath)) {
         throw ArchiveError(ErrorKind::Other, L"找不到压缩包。");
     }
-    const ArchiveFormat format = formatFromPath(archivePath);
+    const std::wstring volumePath = resolveVolumeOpenPath(archivePath);
+    if (!fs::exists(volumePath)) {
+        throw ArchiveError(ErrorKind::Other, L"找不到压缩包。");
+    }
+    const ArchiveFormat format = formatFromPath(volumePath);
     for (int attempt = 0; attempt < 5; ++attempt) {
         try {
             std::optional<ScopedTempPath> nested;
-            std::wstring openPath = archivePath;
+            std::wstring openPath = volumePath;
             ArchiveFormat openFormat = format;
             if (format == ArchiveFormat::TarGz || format == ArchiveFormat::TarXz) {
                 nested.emplace(materializeNestedTar(m_library->library, archivePath, format, hooks));
@@ -920,7 +1033,7 @@ ArchiveInfo ArchiveService::read(const std::wstring& archivePath,
             }
             bit7z::BitArchiveReader reader{m_library->library, openPath, toInFormat(openFormat), password};
             ArchiveInfo info;
-            info.path = archivePath;
+            info.path = volumePath;
             info.format = format;
             info.password = password;
             info.encrypted = reader.isEncrypted() || reader.hasEncryptedItems() || !password.empty();
@@ -1179,6 +1292,7 @@ ExtractResult ArchiveService::extract(const ExtractRequest& request, const Opera
         }
     }
     ExtractRequest current = request;
+    current.archivePath = resolveVolumeOpenPath(current.archivePath);
     // The source archive must never become one of its own extracted outputs.
     // GUI callers provide selected paths; direct service/CLI callers are read here.
     std::vector<std::wstring> paths = current.relativePaths;
@@ -1552,7 +1666,8 @@ std::vector<std::uint8_t> ArchiveService::readItem(const std::wstring& archivePa
                                                    std::wstring password,
                                                    const OperationHooks& hooks,
                                                    std::uint64_t maxBytes) const {
-    const ArchiveFormat format = formatFromPath(archivePath);
+    const std::wstring volumePath = resolveVolumeOpenPath(archivePath);
+    const ArchiveFormat format = formatFromPath(volumePath);
     const auto sizeLimitMessage = [maxBytes]() {
         return L"文件超过内存解压上限（" + std::to_wstring(maxBytes / (1024 * 1024)) +
                L" MB），请改为解压到磁盘后再打开。";
@@ -1560,10 +1675,10 @@ std::vector<std::uint8_t> ArchiveService::readItem(const std::wstring& archivePa
     for (int attempt = 0; attempt < 5; ++attempt) {
         try {
             std::optional<ScopedTempPath> nested;
-            std::wstring openPath = archivePath;
+            std::wstring openPath = volumePath;
             ArchiveFormat openFormat = format;
             if (format == ArchiveFormat::TarGz || format == ArchiveFormat::TarXz) {
-                nested.emplace(materializeNestedTar(m_library->library, archivePath, format, hooks));
+                nested.emplace(materializeNestedTar(m_library->library, volumePath, format, hooks));
                 openPath = nested->wstring();
                 openFormat = ArchiveFormat::Tar;
             }
@@ -1746,14 +1861,18 @@ void ArchiveService::test(const std::wstring& archivePath, std::wstring password
     if (!fs::exists(archivePath)) {
         throw ArchiveError(ErrorKind::Other, L"找不到压缩包。");
     }
-    const ArchiveFormat format = formatFromPath(archivePath);
+    const std::wstring volumePath = resolveVolumeOpenPath(archivePath);
+    if (!fs::exists(volumePath)) {
+        throw ArchiveError(ErrorKind::Other, L"找不到压缩包。");
+    }
+    const ArchiveFormat format = formatFromPath(volumePath);
     for (int attempt = 0; attempt < 5; ++attempt) {
         try {
             std::optional<ScopedTempPath> nested;
-            std::wstring openPath = archivePath;
+            std::wstring openPath = volumePath;
             ArchiveFormat openFormat = format;
             if (format == ArchiveFormat::TarGz || format == ArchiveFormat::TarXz) {
-                nested.emplace(materializeNestedTar(m_library->library, archivePath, format, hooks));
+                nested.emplace(materializeNestedTar(m_library->library, volumePath, format, hooks));
                 openPath = nested->wstring();
                 openFormat = ArchiveFormat::Tar;
             }
